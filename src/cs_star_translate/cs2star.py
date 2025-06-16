@@ -1,12 +1,5 @@
 from __future__ import print_function
-import argparse
-import json
-import logging
-import os.path
-import sys
 import numpy as np
-import pandas as pd
-from glob import glob
 from .pyem import metadata
 from .pyem import star
 def cs2star(input, output,minphic=None,boxsize=None,noswapxy=False,invertx=False,inverty=False):

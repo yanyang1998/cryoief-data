@@ -1,5 +1,5 @@
 # from models.get_transformers import to_int8
-from cryoemdata.data_preprocess.mrc_preprocess import to_int8
+from src.data_preprocess.mrc_preprocess import to_int8
 import numpy as np
 # from PIL import Image
 from torch.utils.data import Dataset
@@ -13,7 +13,6 @@ import torch
 from io import BytesIO
 import json
 import lmdb
-from .utils import get_mean_error_distribution
 from annoy import AnnoyIndex
 
 
