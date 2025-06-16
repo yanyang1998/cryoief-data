@@ -10,8 +10,8 @@ setuptools.setup(
     author_email="y.yan98@outlook.com",
     description="Cryo-EM data processing tools for deep learning (e.g., cryo-IEF)",
     long_description=long_description,
-    long_description_content_type="text/markdown",
-    url="https://github.com/cyclegen/eventbus-py",
+    long_description_content_type="README.md",
+    url="https://github.com/yanyang1998/cryoief-data",
     project_urls={
         "Homepage": "https://github.com/yanyang1998/cryoief-data",
     },
