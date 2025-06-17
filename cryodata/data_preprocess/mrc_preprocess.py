@@ -380,7 +380,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         tmp_data_lmdb_path = dataset_save_dir + '/lmdb_data'
         tmp_data_save_path= dataset_save_dir
         if not os.path.exists(tmp_data_lmdb_path):
-            from src.data_preprocess.lmdb_preprocess import create_lmdb_dataset
+            from cryodata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
 
             image_path_list = [os.path.join(mrc_dir, mrcs_name) for mrcs_name in mrcs_names_list_process]
 

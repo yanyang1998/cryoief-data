@@ -1,5 +1,5 @@
 # from models.get_transformers import to_int8
-from src.data_preprocess.mrc_preprocess import to_int8
+from cryodata.data_preprocess.mrc_preprocess import to_int8
 import numpy as np
 # from PIL import Image
 from torch.utils.data import Dataset

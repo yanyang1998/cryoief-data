@@ -13,13 +13,13 @@ from shutil import rmtree
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
-NAME = 'cryoief-data'
+NAME = 'cryodata'
 DESCRIPTION = 'Cryo-EM data processing tools for deep learning (e.g., cryo-IEF).'
 URL = 'https://github.com/yanyang1998/cryoief-data'
 EMAIL = 'y.yan98@outlook.com'
 AUTHOR = 'Yang Yan'
 REQUIRES_PYTHON = '>=3.9.0'
-VERSION = '0.1.0a2'
+VERSION = '0.1.0a6'
 
 # What packages are required for this module to be executed?
 REQUIRED = ['accelerate>=1.0.0',
