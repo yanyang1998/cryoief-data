@@ -380,7 +380,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         tmp_data_lmdb_path = dataset_save_dir + '/lmdb_data'
         tmp_data_save_path= dataset_save_dir
         if not os.path.exists(tmp_data_lmdb_path):
-            from cryoemdata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
+            from src.data_preprocess.lmdb_preprocess import create_lmdb_dataset
 
             image_path_list = [os.path.join(mrc_dir, mrcs_name) for mrcs_name in mrcs_names_list_process]
 
@@ -389,7 +389,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
             # map_size = int(80 * 1024 * len(image_path_list) * 6)
             map_size = int(80 * 1024 * len(image_path_list) * mean_len * 4)
             # 创建 LMDB 数据库
-            create_lmdb_dataset(image_path_list, tmp_data_lmdb_path, num_processes=32, chunksize=0,
+            create_lmdb_dataset(image_path_list, tmp_data_lmdb_path, num_processes=8, chunksize=0,
                                 map_size=map_size, window=False,  generate_ft_data=False,
                                 save_raw_data=False)
 
@@ -448,7 +448,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
             with open(dataset_save_dir + 'means_stds_FT.data', 'wb') as filehandle:
                 pickle.dump(mean_std_FT, filehandle)
 
-    print('raw data process all done')
+    print('Cryoem data preprocess all done')
     return new_cs_data
 def append_data(name,cs_data,indices_dict):
     # mm=np.sort(indices_dict[name])

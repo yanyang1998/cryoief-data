@@ -154,42 +154,4 @@ def cs2star(input, output,minphic=None,boxsize=None,noswapxy=False,invertx=False
     # return df
 
 
-if __name__ == "__main__":
-    input=["/yanyang2/dataset/clustering/generated_dataset/test/cs_file_read/J51_simulated_particles2.cs",]
-    output="/yanyang2/dataset/clustering/generated_dataset/test/cs_file_read/output.star"
-    cs2star(input,output)
-    pass
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("input", help="Cryosparc metadata .csv (v0.6.5) or .cs (v2+) files", nargs="*")
-    # parser.add_argument("output", help="Output .star file")
-    # parser.add_argument("--movies", help="Write per-movie star files into output directory", action="store_true")
-    # parser.add_argument("--boxsize", help="Cryosparc refinement box size (if different from particles)", type=float)
-    # # parser.add_argument("--passthrough", "-p", help="List file required for some Cryosparc 2+ job types")
-    # parser.add_argument("--class", help="Keep this class in output, may be passed multiple times",
-    #                     action="append", type=int, dest="cls")
-    # parser.add_argument("--minphic", help="Minimum posterior probability for class assignment", type=float, default=0)
-    # parser.add_argument("--stack-path", help="Path to single particle stack", type=str)
-    # parser.add_argument("--micrograph-path", help="Replacement path for micrographs or movies")
-    # parser.add_argument("--copy-micrograph-coordinates",
-    #                     help="Source for micrograph paths and particle coordinates (file or quoted glob)",
-    #                     type=str)
-    # parser.add_argument("--swapxy",
-    #                     help="Swap X and Y axes when converting particle coordinates from normalized to absolute",
-    #                     action="store_true")
-    # parser.add_argument("--noswapxy", help="Do not swap X and Y axes when converting particle coordinates",
-    #                     action="store_false")
-    # parser.add_argument("--invertx", help="Invert particle coordinate X axis", action="store_true")
-    # parser.add_argument("--inverty", help="Invert particle coordinate Y axis", action="store_false")
-    # parser.add_argument("--flipy", help="Invert refined particle Y shifts", action="store_true")
-    # parser.add_argument("--cached", help="Keep paths from the Cryosparc 2+ cache when merging coordinates",
-    #                     action="store_true")
-    # parser.add_argument("--transform",
-    #                     help="Apply rotation matrix or 3x4 rotation plus translation matrix to particles (Numpy format)",
-    #                     type=str)
-    # parser.add_argument("--relion2", "-r2", help="Relion 2 compatible outputs", action="store_true")
-    # parser.add_argument("--strip-uid", help="Strip all leading UIDs from file names", nargs="?", default=None, const=-1,
-    #                     type=int)
-    # parser.add_argument("--10k", help="Only read first 10,000 particles for rapid testing.", action="store_true",
-    #                     dest="first10k")
-    # parser.add_argument("--loglevel", "-l", type=str, default="WARNING", help="Logging level and debug output")
-    # sys.exit(main(parser.parse_args()))
+

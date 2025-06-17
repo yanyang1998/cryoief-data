@@ -44,23 +44,3 @@ def write_record_data(path, record_data):
     cs_data.save(path+'/simluated_particles.cs')
     cs2star(path+'/simluated_particles.cs', path+'/simluated_particles.star')
 
-# if __name__ == "__main__":
-#     # blob_path=["/Share/cryosparc_projects/CS-yanyang-test/J51/J51_simulated_particles.mrcs"]*1000
-#     target_mrcs_path="/Share2/home/yanyang/data/simulated_dataset/test/emd_6840/0.05/particles/"
-#     path = "/yanyang2/dataset/clustering/generated_dataset/test_star_file/emd_6840/0.05/data_record/"
-#     save_path="/yanyang2/dataset/clustering/generated_dataset/test/cs_file_read/"
-#     record_data=read_record_data(path,target_mrcs_path=target_mrcs_path)
-#     write_record_data(save_path,record_data)
-#     # cs_data=Dataset.load(cs_path)
-#     # cs_data['blob/path']=blob_path
-#     # cs_data.save(save_path)
-#     pass
-#
-if __name__ == "__main__":
-    blob_path=["/Share/cryosparc_projects/CS-yanyang-test/J51/J51_simulated_particles.mrcs"]*1000
-    cs_path = "/yanyang2/dataset/clustering/generated_dataset/test/cs_file_read/J51_simulated_particles.cs"
-    save_path="/yanyang2/dataset/clustering/generated_dataset/test/cs_file_read/J51_simulated_particles2.cs"
-    cs_data=Dataset.load(cs_path)
-    cs_data['blob/path']=blob_path
-    cs_data.save(save_path)
-    pass
