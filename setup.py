@@ -19,7 +19,7 @@ URL = 'https://github.com/yanyang1998/cryoief-data'
 EMAIL = 'y.yan98@outlook.com'
 AUTHOR = 'Yang Yan'
 REQUIRES_PYTHON = '>=3.9.0'
-VERSION = '0.1.0a6'
+VERSION = '0.1.0b1'
 
 # What packages are required for this module to be executed?
 REQUIRED = ['accelerate>=1.0.0',

@@ -764,7 +764,7 @@ class EMDataset_from_path(Dataset):
                 with self.lmdb_env.begin(write=False) as txn:
                     key = f"{item}".encode()
                     value = txn.get(key)
-                    data = torch.load(BytesIO(value))
+                    data = torch.load(BytesIO(value),weights_only=False)
                     mrcdata = data['image_processed']
                     tif_path = ''
                     # raw_tif_path = ''
