@@ -12,22 +12,20 @@ from . import mrc
 from . import fft
 
 
-
-def sample_and_evaluate(path_list,save_path,num_stacks=100,num_particles=50000,window=True, window_r=0.85):
-    if num_stacks> len(path_list):
-        num_stacks=len(path_list)
-    path_sampled=random.sample(path_list, num_stacks)
-    np_image_raw_all=[]
-    np_image_FT_all=[]
-    imgs_len_all=[]
+def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000, window=False, window_r=0.85,needs_FT=False):
+    if num_stacks > len(path_list):
+        num_stacks = len(path_list)
+    path_sampled = random.sample(path_list, num_stacks)
+    np_image_raw_all = []
+    np_image_FT_all = []
+    imgs_len_all = []
     select_num_per_stack = num_particles // num_stacks
 
     for i in range(num_stacks):
-        arr,_= mrc.parse_mrc(path_sampled[i])
+        arr, _ = mrc.parse_mrc(path_sampled[i])
         # np_image_raw = np.float32(mrcfile.open(path_sampled[i]).data)
         np_image_raw = np.float32(arr)
         imgs_len = np_image_raw.shape[0]
-
 
         # particles = []
         # imgs=[]
@@ -38,44 +36,46 @@ def sample_and_evaluate(path_list,save_path,num_stacks=100,num_particles=50000,w
         # for i in select_idx:
         #     img = np_image_raw[i]
         #     particles.append(fft.ht2_center(img))
-        np_image_raw_sampled=np.asarray([np_image_raw[i] for i in select_idx],dtype=np.float32)
+        np_image_raw_sampled = np.asarray([np_image_raw[i] for i in select_idx], dtype=np.float32)
         if window:
-            np_image_raw_sampled=np_image_raw_sampled*window_mask(np_image_raw_sampled.shape[-1], window_r, .99)
-        particles=[fft.ht2_center(np_image_raw_sampled[i]) for i in range(np_image_raw_sampled.shape[0])]
-        np_image_FT_sampled = np.asarray(particles, dtype=np.float32)
-        np_image_FT_sampled = fft.symmetrize_ht(np_image_FT_sampled)
+            np_image_raw_sampled = np_image_raw_sampled * window_mask(np_image_raw_sampled.shape[-1], window_r, .99)
+        if needs_FT:
+            particles = [fft.ht2_center(np_image_raw_sampled[i]) for i in range(np_image_raw_sampled.shape[0])]
+            np_image_FT_sampled = np.asarray(particles, dtype=np.float32)
+            np_image_FT_sampled = fft.symmetrize_ht(np_image_FT_sampled)
+            np_image_FT_all.append(np_image_FT_sampled)
         # np_image_raw_sampled = np.asarray(imgs, dtype=np.float32)
 
         np_image_raw_all.append(np_image_raw_sampled)
-        np_image_FT_all.append(np_image_FT_sampled)
         imgs_len_all.append(imgs_len)
-    np_image_raw_all=np.concatenate(np_image_raw_all,axis=0)
-    np_image_FT_all=np.concatenate(np_image_FT_all,axis=0)
+    np_image_raw_all = np.concatenate(np_image_raw_all, axis=0)
+    if needs_FT:
+        np_image_FT_all = np.concatenate(np_image_FT_all, axis=0)
 
     # if num_particles> len(np_image_raw_all):
     #     num_particles=len(np_image_raw_all)
     # index = np.random.choice(np.arange(len(np_image_raw_all)), size=num_particles, replace=False)
     # np_image_raw_all_sampled=np_image_raw_all[index]
     # np_image_FT_all_sampled=np_image_FT_all[index]
-    means_raw=np.mean(np_image_raw_all)
-    std_raw=np.std(np_image_raw_all)
+    means_raw = np.mean(np_image_raw_all)
+    std_raw = np.std(np_image_raw_all)
     # means_FT=np.mean(np_image_FT_all_sampled)
-    std_FT=np.std(np_image_FT_all)
-    mean_imgs_len=np.mean(imgs_len_all)
+    std_FT = np.std(np_image_FT_all) if needs_FT else 0.0
+    mean_imgs_len = np.mean(imgs_len_all)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
     with open(os.path.join(save_path, 'means_stds_raw.data'), 'wb') as filehandle:
         pickle.dump((means_raw, std_raw), filehandle)
     with open(os.path.join(save_path, 'means_stds_FT.data'), 'wb') as filehandle:
         pickle.dump((0.0, std_FT), filehandle)
-    img_dim=np_image_raw_all.shape[-1]
+    img_dim = np_image_raw_all.shape[-1]
     with open(os.path.join(save_path, 'img_dim.data'), 'wb') as filehandle:
         pickle.dump(img_dim, filehandle)
     # return (means_raw, std_raw), (means_FT, std_FT), mean_imgs_len
     return mean_imgs_len
 
 
-def get_mean_std(path_list, Cnum=10000,is_normalize=True):
+def get_mean_std(path_list, Cnum=10000, is_normalize=True):
     # calculate means and stds
     imgs = []
     random.shuffle(path_list)
@@ -85,9 +85,9 @@ def get_mean_std(path_list, Cnum=10000,is_normalize=True):
     for i in range(Cnum):
         # img = np.array(Image.open(path_list[i]))
         img = pickle.load(open(sample_path_list[i], 'rb'))
-        if isinstance(img,np.ndarray):
-            min_val= np.min(img)
-            max_val= np.max(img)
+        if isinstance(img, np.ndarray):
+            min_val = np.min(img)
+            max_val = np.max(img)
         else:
             min_val, max_val = img.getextrema()
             img = np.array(img)
@@ -101,20 +101,21 @@ def get_mean_std(path_list, Cnum=10000,is_normalize=True):
     return means, stds
 
 
-def sample_and_calculate_mean_std(path_list, Cnum=1000, Ctimes=1,is_normalize=True):
+def sample_and_calculate_mean_std(path_list, Cnum=1000, Ctimes=1, is_normalize=True):
     mean_list = []
     std_list = []
     Cnum_all = 0
     for i in range(Ctimes):
         if Cnum_all >= len(path_list):
             break
-        means, stds = get_mean_std(path_list, Cnum,is_normalize=is_normalize)
+        means, stds = get_mean_std(path_list, Cnum, is_normalize=is_normalize)
         mean_list.append(means)
         std_list.append(stds)
         Cnum_all += Cnum
     mean = np.mean(mean_list)
     std = np.mean(std_list)
     return mean, std
+
 
 def mrcs_resize(mrcs, width, height, is_norm=False):
     resized_mrcs = np.zeros((mrcs.shape[0], width, height))
@@ -130,6 +131,7 @@ def mrcs_resize(mrcs, width, height, is_norm=False):
     resized_mrcs = resized_mrcs.astype('float32')
     return resized_mrcs
 
+
 def mrcs_to_int8(mrcs):
     if torch.is_tensor(mrcs):
         new_mrcs = torch.zeros_like(mrcs, dtype=torch.uint8)
@@ -138,6 +140,7 @@ def mrcs_to_int8(mrcs):
     for i in range(mrcs.shape[0]):
         new_mrcs[i] = to_int8(mrcs[i])
     return new_mrcs
+
 
 # def to_int8(mrcdata):
 #     # mrcdata = np.array(mrcdata)
@@ -152,7 +155,7 @@ def mrcs_to_int8(mrcs):
 #         mrcdata_processed = mrcdata.astype(np.uint8)
 #
 #     return Image.fromarray(mrcdata_processed)
-    # return mrcdata
+# return mrcdata
 
 def to_int8(mrcdata):
     if torch.is_tensor(mrcdata):
@@ -161,7 +164,7 @@ def to_int8(mrcdata):
     else:
         if np.max(mrcdata) - np.min(mrcdata) != 0:
             mrcdata = (mrcdata - np.min(mrcdata)) / ((np.max(mrcdata) - np.min(mrcdata)))
-            mrcdata= (mrcdata * 255).astype(np.uint8)
+            mrcdata = (mrcdata * 255).astype(np.uint8)
         else:
             mrcdata = mrcdata.astype(np.uint8)
         mrcdata = Image.fromarray(mrcdata)
@@ -176,6 +179,7 @@ def window_mask(resolution, in_rad, out_rad=.99):
     mask = np.minimum(1.0, np.maximum(0.0, 1 - (r - in_rad) / (out_rad - in_rad)))
     return mask
 
+
 def raw_csdata_process_from_cryosparc_dir(raw_data_path):
     if raw_data_path.endswith('cs'):
         raw_data_path = os.path.dirname(raw_data_path)
@@ -188,32 +192,24 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path):
     other_cs_path = None
     for filename in os.listdir(raw_data_path):
         if filename.endswith('passthrough_particles.cs'):
-
             passthrough_particles_path = os.path.join(raw_data_path, filename)
 
         if filename.endswith('_split_0.cs'):
-
             passthrough_particles_path = os.path.join(raw_data_path, filename)
 
         if filename.endswith('extracted_particles.cs'):
-
             particles_cs_path = os.path.join(raw_data_path, filename)
 
-
         if filename.endswith('imported_particles.cs'):
-
             particles_cs_path = os.path.join(raw_data_path, filename)
 
         if filename.endswith('restacked_particles.cs'):
-
             particles_cs_path = os.path.join(raw_data_path, filename)
 
         if filename.endswith('split_0000.cs'):
-
             particles_cs_path = os.path.join(raw_data_path, filename)
 
         if filename.endswith('downsampled_particles.cs'):
-
             particles_cs_path = os.path.join(raw_data_path, filename)
         if filename.endswith('.cs'):
             other_cs_path = os.path.join(raw_data_path, filename)
@@ -227,7 +223,7 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path):
             cs_data = Dataset.load(other_cs_path)
 
         else:
-            Exception(raw_data_path+': corresponding  not exists!')
+            Exception(raw_data_path + ': corresponding  not exists!')
 
         cs_data.save(new_csdata_path)
     else:
@@ -242,18 +238,19 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path):
     elif os.path.exists(os.path.join(raw_data_path, 'downsample')):
         mrc_dir = os.path.join(raw_data_path, 'downsample')
     elif particles_cs_path is not None and particles_cs_path.endswith('split_0000.cs'):
-        raw_dir='/'.join(raw_data_path.split('/')[0:-2])
-        mrc_dir = raw_dir+'/'+'/'.join(cs_data['blob/path'][0].split('/')[0:-1])+'/'
+        raw_dir = '/'.join(raw_data_path.split('/')[0:-2])
+        mrc_dir = raw_dir + '/' + '/'.join(cs_data['blob/path'][0].split('/')[0:-1]) + '/'
     elif particles_cs_path is not None and particles_cs_path.endswith('downsampled_particles.cs'):
-        raw_dir='/'.join(raw_data_path.split('/')[0:-1])
-        mrc_dir=raw_dir
+        raw_dir = '/'.join(raw_data_path.split('/')[0:-1])
+        mrc_dir = raw_dir
         # mrc_dir = raw_dir+'/'+'/'.join(cs_data['blob/path'][0].split('/')[0:-1])+'/'
-    return cs_data,mrc_dir
+    return cs_data, mrc_dir
+
 
 def combine_cs_files_column(cs_path1, cs_path2):
-    cs_data1=Dataset.load(cs_path1)
-    cs_data2=Dataset.load(cs_path2)
-    cs_data=Dataset.innerjoin(cs_data1,cs_data2)
+    cs_data1 = Dataset.load(cs_path1)
+    cs_data2 = Dataset.load(cs_path2)
+    cs_data = Dataset.innerjoin(cs_data1, cs_data2)
     # save_dir='/'.join(save_path.split('/')[:-1])
     # if not os.path.exists(save_dir):
     #     os.makedirs(save_dir)
@@ -262,20 +259,22 @@ def combine_cs_files_column(cs_path1, cs_path2):
     return cs_data
     # cs2star(save_path,save_path.replace('.cs','.star'))
 
-def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_dataset_save_dir, FT_dataset_save_dir,resize=224,
-                                 is_to_int8=True,indeices_per_mrcs_dict=None):
+
+def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_dataset_save_dir, FT_dataset_save_dir,
+                                 resize=224,
+                                 is_to_int8=True, indeices_per_mrcs_dict=None):
     mrcs_path = os.path.join(mrc_dir, name)
-    arr,_= mrc.parse_mrc(mrcs_path)
+    arr, _ = mrc.parse_mrc(mrcs_path)
     # mrcs = np.float32(mrcfile.open(mrcs_path).data)
     mrcs = np.float32(arr)
     mrcs_len = mrcs.shape[0]
     raw_single_particle_path = []
     processed_single_particle_path = []
-    FT_single_particle_path=[]
+    FT_single_particle_path = []
     if indeices_per_mrcs_dict is None:
         ids_list = range(mrcs_len)
     else:
-        ids_list=indeices_per_mrcs_dict[name].tolist()
+        ids_list = indeices_per_mrcs_dict[name].tolist()
 
     if resize and mrcs.shape[1] != resize:
 
@@ -290,7 +289,7 @@ def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_
     if FT_dataset_save_dir is not None:
         particles = []
         for i in range(mrcs_len):
-            img= mrcs[i]
+            img = mrcs[i]
             particles.append(fft.ht2_center(img))
 
         FT_mrcs = np.asarray(particles, dtype=np.float32)
@@ -299,7 +298,6 @@ def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_
     for j in ids_list:
 
         n = str(j + 1).zfill(6)
-
 
         if not os.path.exists(os.path.join(processed_dataset_save_dir, name)):
             os.makedirs(os.path.join(processed_dataset_save_dir, name))
@@ -328,15 +326,15 @@ def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_
         else:
             FT_single_particle_path.append('')
 
-    return raw_single_particle_path, processed_single_particle_path,FT_single_particle_path
+    return raw_single_particle_path, processed_single_particle_path, FT_single_particle_path
 
-def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True,save_raw_data=True,save_FT_data=True,use_lmdb=True):
 
+def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True, save_raw_data=True,
+                        save_FT_data=True, use_lmdb=True, num_processes=8, chunksize=0):
     if not os.path.exists(dataset_save_dir):
         os.makedirs(dataset_save_dir)
 
     cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(raw_dataset_dir)
-
 
     if cs_data is not None:
         blob_path_list = cs_data['blob/path'].tolist()
@@ -349,13 +347,13 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         print("Processing cs_data...")
         mrcs_names_np = np.array(mrcs_names_list)
         # Create a dictionary where the keys are names and the values are lists of indices
-        blob_idx_np=_np = np.array(cs_data['blob/idx'].tolist())
+        blob_idx_np = _np = np.array(cs_data['blob/idx'].tolist())
         sorted_indices = np.argsort(mrcs_names_np)
         sorted_names = mrcs_names_np[sorted_indices]
         unique_names, counts = np.unique(sorted_names, return_counts=True)
         split_indices = np.split(sorted_indices, np.cumsum(counts)[:-1])
         indices_dict = dict(zip(unique_names, split_indices))
-        indeices_per_mrcs_dict={}
+        indeices_per_mrcs_dict = {}
 
         for name, indices in indices_dict.items():
             # Convert indices to numpy array
@@ -369,27 +367,23 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
 
             # Update indices in indices_dict in-place
             indices_dict[name] = indices_np[sorted_indices]
-            indeices_per_mrcs_dict[name]=np.sort(values)
+            indeices_per_mrcs_dict[name] = np.sort(values)
 
-
-        func_append_data=partial(append_data,cs_data=cs_data,indices_dict=indices_dict)
+        func_append_data = partial(append_data, cs_data=cs_data, indices_dict=indices_dict)
         with multiprocessing.Pool(processes=8) as pool:
             results = pool.map(func_append_data, mrcs_names_list_process)
         new_cs_data = Dataset.append(results[0], *results[1:])
 
-
-
-
         new_csdata_path = os.path.join(dataset_save_dir, 'new_particles.cs')
         new_cs_data.save(new_csdata_path)
     else:
-        indeices_per_mrcs_dict=None
+        indeices_per_mrcs_dict = None
         # mrcs_names_list_process=mrc_list
-        new_cs_data=None
+        new_cs_data = None
 
     if use_lmdb:
         tmp_data_lmdb_path = dataset_save_dir + '/lmdb_data'
-        tmp_data_save_path= dataset_save_dir
+        tmp_data_save_path = dataset_save_dir
         if not os.path.exists(tmp_data_lmdb_path):
             from cryodata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
 
@@ -400,8 +394,8 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
             # map_size = int(80 * 1024 * len(image_path_list) * 6)
             map_size = int(80 * 1024 * len(image_path_list) * mean_len * 4)
             # 创建 LMDB 数据库
-            create_lmdb_dataset(image_path_list, tmp_data_lmdb_path, num_processes=8, chunksize=0,
-                                map_size=map_size, window=False,  generate_ft_data=False,
+            create_lmdb_dataset(image_path_list, tmp_data_lmdb_path, num_processes=num_processes, chunksize=chunksize,
+                                map_size=map_size, window=False, generate_ft_data=False,
                                 save_raw_data=False)
 
     else:
@@ -428,21 +422,20 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         processed_path_list = []
         FT_path_list = []
 
-
         phbar = tqdm(mrcs_names_list_process, desc='data preprocessing')
-        func = partial(raw_data_preprocess_one_mrcs, mrc_dir=mrc_dir, raw_dataset_save_dir=raw_dataset_save_dir,FT_dataset_save_dir=FT_dataset_save_dir,
-                       processed_dataset_save_dir=processed_dataset_save_dir, resize=resize, is_to_int8=is_to_int8,indeices_per_mrcs_dict=indeices_per_mrcs_dict)
+        func = partial(raw_data_preprocess_one_mrcs, mrc_dir=mrc_dir, raw_dataset_save_dir=raw_dataset_save_dir,
+                       FT_dataset_save_dir=FT_dataset_save_dir,
+                       processed_dataset_save_dir=processed_dataset_save_dir, resize=resize, is_to_int8=is_to_int8,
+                       indeices_per_mrcs_dict=indeices_per_mrcs_dict)
         pool = multiprocessing.Pool(20)
         results = pool.map(func, phbar)
         pool.close()
         pool.join()
 
-        for raw_single_particle_path, processed_single_particle_path,FT_single_particle_path in results:
+        for raw_single_particle_path, processed_single_particle_path, FT_single_particle_path in results:
             processed_path_list += processed_single_particle_path
             raw_path_list += raw_single_particle_path
             FT_path_list += FT_single_particle_path
-
-
 
         with open(os.path.join(dataset_save_dir, 'output_processed_tif_path.data'), 'wb') as filehandle:
             pickle.dump(processed_path_list, filehandle)
@@ -450,19 +443,19 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         with open(os.path.join(dataset_save_dir, 'output_tif_path.data'), 'wb') as filehandle:
             pickle.dump(raw_path_list, filehandle)
 
-        mean_std_raw = sample_and_calculate_mean_std(raw_path_list,is_normalize=False)
+        mean_std_raw = sample_and_calculate_mean_std(raw_path_list, is_normalize=False)
         with open(dataset_save_dir + 'means_stds.data', 'wb') as filehandle:
             pickle.dump(mean_std_raw, filehandle)
 
         if FT_dataset_save_dir is not None:
-            mean_std_FT = sample_and_calculate_mean_std(FT_path_list,is_normalize=False)
+            mean_std_FT = sample_and_calculate_mean_std(FT_path_list, is_normalize=False)
             with open(dataset_save_dir + 'means_stds_FT.data', 'wb') as filehandle:
                 pickle.dump(mean_std_FT, filehandle)
 
     print('Cryoem data preprocess all done')
     return new_cs_data
-def append_data(name,cs_data,indices_dict):
+
+
+def append_data(name, cs_data, indices_dict):
     # mm=np.sort(indices_dict[name])
     return cs_data.take(indices_dict[name])
-
-
