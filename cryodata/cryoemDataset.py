@@ -103,34 +103,41 @@ class MyEmFile(object):
         return unselected_particles_cs_content, unselected_particles_id
 
 
-class MyMrcData(MyEmFile):
-    def __init__(self, cfg, mrc_path=None, emfile_path=None, processed_data_path=None, selected_emfile_path=None,
+class CryoMetaData(MyEmFile):
+    def __init__(self, cfg=None, mrc_path=None, emfile_path=None, processed_data_path=None, selected_emfile_path=None,
                  tmp_data_save_path=None,
                  is_extra_valset=False, accelerator=None, ctf_correction_averages=False,
                  ctf_correction_inference=False):
-        super(MyMrcData, self).__init__(emfile_path, selected_emfile_path)
+        super(CryoMetaData, self).__init__(emfile_path, selected_emfile_path)
 
         self.processed_data_path = processed_data_path
         self.id_index_dict = None
-        if processed_data_path is not None:
-            # with open(os.path.join(processed_data_path, 'path_divided_by_labels.data'), 'rb') as filehandle:
-            #     self.path_divided_by_labels = pickle.load(filehandle)
-            # with open(os.path.join(processed_data_path, 'ids_divided_by_labels.data'), 'rb') as filehandle:
-            #     self.ids_divided_by_labels = pickle.load(filehandle)
-            self.load_preprocessed_data_path(data_path=processed_data_path,
-                                             ctf_correction_averages=ctf_correction_averages,
-                                             ctf_correction_train=ctf_correction_inference)
-        else:
-            if is_extra_valset:
-                tmp_data_save_path = tmp_data_save_path + '/tmp/preprocessed_data/extra_valset/'
-            else:
-                tmp_data_save_path = tmp_data_save_path + '/tmp/preprocessed_data/trainset/'
-            self.mrc_path = mrc_path
-            if not os.path.exists(tmp_data_save_path + '/output_tif_path.data') and accelerator.is_local_main_process:
-                self.load_path()
-                self.divided_into_single_mrc(tmp_data_save_path, resize=cfg['resize'], crop_ratio=cfg['crop_ratio'])
-            accelerator.wait_for_everyone()
-            self.load_preprocessed_data_path(data_path=tmp_data_save_path)
+
+
+        assert processed_data_path is not None, "processed_data_path must be provided"
+        self.load_preprocessed_data_path(data_path=processed_data_path,
+                                         ctf_correction_averages=ctf_correction_averages,
+                                         ctf_correction_train=ctf_correction_inference)
+
+        # if processed_data_path is not None:
+        #     # with open(os.path.join(processed_data_path, 'path_divided_by_labels.data'), 'rb') as filehandle:
+        #     #     self.path_divided_by_labels = pickle.load(filehandle)
+        #     # with open(os.path.join(processed_data_path, 'ids_divided_by_labels.data'), 'rb') as filehandle:
+        #     #     self.ids_divided_by_labels = pickle.load(filehandle)
+        #     self.load_preprocessed_data_path(data_path=processed_data_path,
+        #                                      ctf_correction_averages=ctf_correction_averages,
+        #                                      ctf_correction_train=ctf_correction_inference)
+        # else:
+        #     if is_extra_valset:
+        #         tmp_data_save_path = tmp_data_save_path + '/tmp/preprocessed_data/extra_valset/'
+        #     else:
+        #         tmp_data_save_path = tmp_data_save_path + '/tmp/preprocessed_data/trainset/'
+        #     self.mrc_path = mrc_path
+        #     if not os.path.exists(tmp_data_save_path + '/output_tif_path.data') and accelerator.is_local_main_process:
+        #         self.load_path()
+        #         self.divided_into_single_mrc(tmp_data_save_path, resize=cfg['resize'], crop_ratio=cfg['crop_ratio'])
+        #     accelerator.wait_for_everyone()
+        #     self.load_preprocessed_data_path(data_path=tmp_data_save_path)
 
     def load_path(self):
         mrcs_path_list = []
@@ -221,14 +228,14 @@ class MyMrcData(MyEmFile):
         else:
             self.dataset_map = None
 
-        if os.path.exists(data_path + '/mean_error_dict.json'):
-            mean_error_dict = json.load(open(data_path + '/mean_error_dict.json', 'r'))
-            mean_error_dis_dict = get_mean_error_distribution(mean_error_dict)
-            self.mean_error_dis_dict = {self.protein_id_dict[key]: value for key, value in mean_error_dis_dict.items()}
-            # self.mean_error_dis_dict = {'good':{self.protein_id_dict[key]: value for key, value in mean_error_dis_dict['good'].items()},
-            #                             'bad':{self.protein_id_dict[key]: value for key, value in mean_error_dis_dict['bad'].items()}}
-        else:
-            self.mean_error_dis_dict = None
+        # if os.path.exists(data_path + '/mean_error_dict.json'):
+        #     mean_error_dict = json.load(open(data_path + '/mean_error_dict.json', 'r'))
+        #     mean_error_dis_dict = get_mean_error_distribution(mean_error_dict)
+        #     self.mean_error_dis_dict = {self.protein_id_dict[key]: value for key, value in mean_error_dis_dict.items()}
+        #     # self.mean_error_dis_dict = {'good':{self.protein_id_dict[key]: value for key, value in mean_error_dis_dict['good'].items()},
+        #     #                             'bad':{self.protein_id_dict[key]: value for key, value in mean_error_dis_dict['bad'].items()}}
+        # else:
+        #     self.mean_error_dis_dict = None
 
         if os.path.exists(data_path + '/data_error_dict.json'):
             data_error_dict = json.load(open(data_path + '/data_error_dict.json', 'r'))
@@ -501,21 +508,21 @@ class MyMrcData(MyEmFile):
         return id_index_dict, dataset_id_map,id_scores_dict
 
 
-class EMDataset_from_path(Dataset):
+class CryoEMDataset(Dataset):
     """自定义数据集"""
 
-    def __init__(self, mrcdata: MyMrcData, transform=None,
+    def __init__(self, metadata: CryoMetaData, transform=None,
                  normal_scale=10, accelerator=None,
                  local_crops=None,
                  slice_setting=None,
                  mix_pos_setting=None,
                  weight_for_contrastive_classification_label=0.0,
-                 use_triplex_labels=False, bar_score=0.4,
-                 in_chans=1, needs_aug2=True
+                 use_triplex_labels=False, bar_score=0.0,
+                 in_chans=1, needs_aug2=False
                  ):
         self.pose_indices = AnnoyIndex(2, 'euclidean')
-        self.tif_len = mrcdata.length
-        self.lmdb_path = mrcdata.lmdb_path
+        self.tif_len = metadata.length
+        self.lmdb_path = metadata.lmdb_path
         # if mrcdata.lmdb_path is not None:
         #     self.lmdb_env=lmdb.open(
         #         mrcdata.lmdb_path,
@@ -529,13 +536,13 @@ class EMDataset_from_path(Dataset):
         # else:
         #     self.processed_tif_txn = None
         # self.processed_tif_txn = mrcdata.processed_tif_txn
-        self.tif_path_list = mrcdata.all_processed_tif_path
-        self.tif_path_list_ctf_correction = mrcdata.all_processed_tif_path_ctf_correction
-        self.tif_path_list_raw = mrcdata.all_tif_path
-        self.tif_path_list_raw_ctf_correction = mrcdata.all_tif_path_ctf_correction
-        self.labels_for_clustering = mrcdata.labels_for_clustering
-        self.labels_classification = mrcdata.labels_classification
-        self.id_index_dict = mrcdata.id_index_dict
+        self.tif_path_list = metadata.all_processed_tif_path
+        self.tif_path_list_ctf_correction = metadata.all_processed_tif_path_ctf_correction
+        self.tif_path_list_raw = metadata.all_tif_path
+        self.tif_path_list_raw_ctf_correction = metadata.all_tif_path_ctf_correction
+        self.labels_for_clustering = metadata.labels_for_clustering
+        self.labels_classification = metadata.labels_classification
+        self.id_index_dict = metadata.id_index_dict
 
         self.slice_setting = slice_setting
         self.mix_pos_setting = mix_pos_setting
@@ -548,12 +555,12 @@ class EMDataset_from_path(Dataset):
         else:
             self.bar_score = bar_score
 
-        self.protein_id_list = mrcdata.protein_id_list
-        self.protein_id_dict = mrcdata.protein_id_dict
+        self.protein_id_list = metadata.protein_id_list
+        self.protein_id_dict = metadata.protein_id_dict
         self.protein_id_dict_reverse = {v: k for k, v in self.protein_id_dict.items()}
 
-        if mrcdata.particles_id is not None:
-            self.particles_id = mrcdata.particles_id
+        if metadata.particles_id is not None:
+            self.particles_id = metadata.particles_id
         else:
             self.particles_id = range(self.tif_len)
         # self.isnorm = is_Normalize
@@ -565,7 +572,7 @@ class EMDataset_from_path(Dataset):
 
         # self.labels_for_training = mrcdata.labels_for_training
         # self.probabilities_for_sampling = mrcdata.probabilities_for_sampling
-        self.processed_data_path = mrcdata.processed_data_path
+        self.processed_data_path = metadata.processed_data_path
 
         if local_crops is not None:
             self.local_crops_number = local_crops['number']
@@ -584,7 +591,7 @@ class EMDataset_from_path(Dataset):
         else:
             self.tif_path_list_slice = None
 
-        self.pose_id_map = mrcdata.pose_id_map
+        self.pose_id_map = metadata.pose_id_map
 
     def __len__(self):
         return self.tif_len

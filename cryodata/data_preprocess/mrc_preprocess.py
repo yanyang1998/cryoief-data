@@ -13,13 +13,14 @@ from . import fft
 
 
 
-def sample_and_evaluate(path_list,save_path,num_stacks=5,num_particles=2000):
+def sample_and_evaluate(path_list,save_path,num_stacks=100,num_particles=50000,window=True, window_r=0.85):
     if num_stacks> len(path_list):
         num_stacks=len(path_list)
     path_sampled=random.sample(path_list, num_stacks)
     np_image_raw_all=[]
     np_image_FT_all=[]
     imgs_len_all=[]
+    select_num_per_stack = num_particles // num_stacks
 
     for i in range(num_stacks):
         arr,_= mrc.parse_mrc(path_sampled[i])
@@ -28,28 +29,38 @@ def sample_and_evaluate(path_list,save_path,num_stacks=5,num_particles=2000):
         imgs_len = np_image_raw.shape[0]
 
 
-        particles = []
-        for i in range(imgs_len):
-            img = np_image_raw[i]
-            particles.append(fft.ht2_center(img))
+        # particles = []
+        # imgs=[]
+        if imgs_len < select_num_per_stack:
+            select_idx = np.arange(imgs_len)
+        else:
+            select_idx = np.random.choice(np.arange(imgs_len), size=select_num_per_stack, replace=False)
+        # for i in select_idx:
+        #     img = np_image_raw[i]
+        #     particles.append(fft.ht2_center(img))
+        np_image_raw_sampled=np.asarray([np_image_raw[i] for i in select_idx],dtype=np.float32)
+        if window:
+            np_image_raw_sampled=np_image_raw_sampled*window_mask(np_image_raw_sampled.shape[-1], window_r, .99)
+        particles=[fft.ht2_center(np_image_raw_sampled[i]) for i in range(np_image_raw_sampled.shape[0])]
+        np_image_FT_sampled = np.asarray(particles, dtype=np.float32)
+        np_image_FT_sampled = fft.symmetrize_ht(np_image_FT_sampled)
+        # np_image_raw_sampled = np.asarray(imgs, dtype=np.float32)
 
-        np_image_FT = np.asarray(particles, dtype=np.float32)
-        np_image_FT = fft.symmetrize_ht(np_image_FT)
-
-        np_image_raw_all.append(np_image_raw)
-        np_image_FT_all.append(np_image_FT)
+        np_image_raw_all.append(np_image_raw_sampled)
+        np_image_FT_all.append(np_image_FT_sampled)
         imgs_len_all.append(imgs_len)
     np_image_raw_all=np.concatenate(np_image_raw_all,axis=0)
     np_image_FT_all=np.concatenate(np_image_FT_all,axis=0)
-    if num_particles> len(np_image_raw_all):
-        num_particles=len(np_image_raw_all)
-    index = np.random.choice(np.arange(len(np_image_raw_all)), size=num_particles, replace=False)
-    np_image_raw_all_sampled=np_image_raw_all[index]
-    np_image_FT_all_sampled=np_image_FT_all[index]
-    means_raw=np.mean(np_image_raw_all_sampled)
-    std_raw=np.std(np_image_raw_all_sampled)
+
+    # if num_particles> len(np_image_raw_all):
+    #     num_particles=len(np_image_raw_all)
+    # index = np.random.choice(np.arange(len(np_image_raw_all)), size=num_particles, replace=False)
+    # np_image_raw_all_sampled=np_image_raw_all[index]
+    # np_image_FT_all_sampled=np_image_FT_all[index]
+    means_raw=np.mean(np_image_raw_all)
+    std_raw=np.std(np_image_raw_all)
     # means_FT=np.mean(np_image_FT_all_sampled)
-    std_FT=np.std(np_image_FT_all_sampled)
+    std_FT=np.std(np_image_FT_all)
     mean_imgs_len=np.mean(imgs_len_all)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
