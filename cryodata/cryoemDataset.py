@@ -519,8 +519,6 @@ class CryoEMDataset(Dataset):
                  weight_for_contrastive_classification_label=0.0,
                  use_triplex_labels=False, bar_score=0.0,
                  in_chans=1, needs_aug2=False,
-                 pose_search_N=None,
-                 pose_search_divide=50
                  ):
         self.pose_indices = AnnoyIndex(2, 'euclidean')
         self.tif_len = metadata.length
@@ -594,8 +592,8 @@ class CryoEMDataset(Dataset):
             self.tif_path_list_slice = None
 
         self.pose_id_map = metadata.pose_id_map
-        self.pose_search_N = pose_search_N
-        self.pose_search_divide = pose_search_divide
+
+
 
     def __len__(self):
         return self.tif_len
@@ -722,9 +720,9 @@ class CryoEMDataset(Dataset):
     def  get_nearest_item(self, item, N=None,pose_divide=None):
 
         if N is None:
-            N = self.pose_search_N
+            N = self.mix_pos_setting['pose_search_N']
         if pose_divide is None:
-            pose_divide = self.pose_search_divide
+            pose_divide = self.mix_pos_setting['pose_search_divide']
 
         protein_id = self.protein_id_list[item]
         item_list = self.id_index_dict.get(protein_id, [])
