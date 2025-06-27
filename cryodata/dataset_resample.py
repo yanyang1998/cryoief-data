@@ -7,7 +7,8 @@ class MyResampleSampler(Sampler):
                  resample_num_neg, resample_num_mid,
                  batch_size_all=None, shuffle_type=None, dataset_id_map=None, only_mixup_bad_particles=False,
                  error_balance=None, mean_error_dis_dict=None, data_error_dis_dict=None,
-                 balance_per_interval=False
+                 balance_per_interval=False,
+                 index_list=[0.3]
                  ):
         self.data = data
         self.id_index_dict_pos = id_index_dict_pos
@@ -25,6 +26,7 @@ class MyResampleSampler(Sampler):
         self.mean_error_dis_dict = mean_error_dis_dict
         self.data_error_dis_dict = data_error_dis_dict
         self.balance_per_interval = balance_per_interval
+        self.index_list = index_list
         self.indices = resample_from_id_index_dict_finetune(self.id_index_dict_pos,
                                                             self.id_index_dict_mid,
                                                             self.id_index_dict_neg,
@@ -35,6 +37,7 @@ class MyResampleSampler(Sampler):
                                                             dataset_id_map=dataset_id_map,
                                                             only_mixup_bad_particles=only_mixup_bad_particles,
                                                             balance_per_interval=balance_per_interval,
+                                                            index_list=index_list
                                                             # , error_balance=error_balance,
                                                             # mean_error_dis_dict=mean_error_dis_dict
                                                             # , data_error_dis_dict=data_error_dis_dict
@@ -51,6 +54,7 @@ class MyResampleSampler(Sampler):
                                                             dataset_id_map=self.dataset_id_map,
                                                             only_mixup_bad_particles=self.only_mixup_bad_particles,
                                                             balance_per_interval=self.balance_per_interval,
+                                                            index_list=self.balance_per_interval,
                                                             # , error_balance=self.error_balance,
                                                             # mean_error_dis_dict=self.mean_error_dis_dict
                                                             # , data_error_dis_dict=self.data_error_dis_dict
