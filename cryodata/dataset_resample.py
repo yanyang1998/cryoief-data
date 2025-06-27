@@ -133,7 +133,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                 combine_same_class=False, only_mixup_bad_particles=False, error_balance=None,
                                 mean_error_dis_dict=None, data_error_dis_dict=None,
                                 id_scores_dict=None, scores_bar=0.0,
-                                balance_per_interval=False
+                                balance_per_interval=False,
+interval_list=[0.3]
                                 ):
     random.seed(my_seed)
     resampled_index_list = []
@@ -175,11 +176,13 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                                max_number_per_sample_pos, shuffle_type,
                                                                                shuffle_mix_up_ratio,
                                                                                is_bad_class=my_id in bad_id_list,
-                                                                               error_distribution=data_error_dis_dict[my_id] if data_error_dis_dict is not None else None)
+                                                                               error_distribution=data_error_dis_dict[my_id] if data_error_dis_dict is not None else None,
+                                                                               interval_list=interval_list)
 
                 selected_index_list2, mix_up_list_added2 = get_index_per_class(id_index_dict[id_map[my_id]],
                                                                                max_number_per_sample_neg, shuffle_type,
-                                                                               shuffle_mix_up_ratio, error_distribution=data_error_dis_dict[id_map[my_id]] if data_error_dis_dict is not None else None)
+                                                                               shuffle_mix_up_ratio, error_distribution=data_error_dis_dict[id_map[my_id]] if data_error_dis_dict is not None else None,
+                                                                               interval_list=interval_list)
                 new_selected_index_list = selected_index_list1 + selected_index_list2
                 # random.shuffle(new_selected_index_list)
                 # resampled_index_list.append(new_selected_index_list)
@@ -195,7 +198,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                                  max_number_per_sample_i, shuffle_type,
                                                                                  shuffle_mix_up_ratio,
                                                                                  is_bad_class=my_id in bad_id_list
-                                                                                 , error_distribution=data_error_dis_dict[my_id] if data_error_dis_dict is not None else None)
+                                                                                 , error_distribution=data_error_dis_dict[my_id] if data_error_dis_dict is not None else None,
+                                                                                 interval_list=interval_list)
             if only_mixup_bad_particles:
                 if my_id in bad_id_list:
                     new_selected_index_list = []
@@ -227,7 +231,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                              dataset_scores=id_scores_dict[my_id] if id_scores_dict is not None else None,
                                                                              # bad_particles_ratio=bad_particles_ratio
                                                                              scores_bar=scores_bar,
-                                                                             balance_per_interval=balance_per_interval
+                                                                             balance_per_interval=balance_per_interval,
+                                                                             interval_list=interval_list
                                                                              )
             if only_mixup_bad_particles:
                 if my_id in bad_id_list_all:
@@ -289,10 +294,10 @@ def resample_from_id_index_dict_old(id_index_dict, max_number_per_sample, bad_pa
 
 
 def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=None, shuffle_mix_up_ratio=0.2,
-                        is_bad_class=False, error_distribution=None,dataset_scores=None,scores_bar=0.8,balance_per_interval=False):
+                        is_bad_class=False, error_distribution=None,dataset_scores=None,scores_bar=0.8,balance_per_interval=False,interval_list=[0.3]):
     # index_list = id_index_dict[my_id]
     if balance_per_interval:
-        index_list = balance_from_scores_interval(20, index_list['score'],index_list['id'],  num_min_per_interval=128)
+        index_list = balance_from_scores_interval(20, index_list['score'],index_list['id'],  num_min_per_interval=128,interval_list=interval_list)
     else:
         if isinstance(index_list, dict):
             index_list = index_list['id']
@@ -364,6 +369,7 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                          batch_size_all=None, shuffle_type=None, shuffle_mix_up_ratio=0.2, my_seed=0,
                                          dataset_id_map=None, only_mixup_bad_particles=False,
                                          balance_per_interval=False,
+                                         index_list=[0.3],
                                          # error_balance=None,
                                          # mean_error_dis_dict=None,
                                          # data_error_dis_dict=None
@@ -376,6 +382,7 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                                            shuffle_mix_up_ratio, my_seed, dataset_id_map=dataset_id_map,
                                                            only_mixup_bad_particles=only_mixup_bad_particles,
                                                            balance_per_interval= balance_per_interval,
+                                                           interval_list=index_list
                                                            # error_balance=error_balance,
                                                            # mean_error_dis_dict=mean_error_dis_dict,
                                                            # data_error_dis_dict=data_error_dis_dict
@@ -389,6 +396,7 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                         shuffle_mix_up_ratio, my_seed,
                                         only_mixup_bad_particles=only_mixup_bad_particles,
                                         balance_per_interval= balance_per_interval,
+                                        interval_list=index_list
                                         # error_balance=error_balance,
                                         # mean_error_dis_dict=mean_error_dis_dict,
                                         # data_error_dis_dict=data_error_dis_dict['good']
@@ -398,6 +406,7 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                         shuffle_mix_up_ratio, my_seed,
                                         only_mixup_bad_particles=only_mixup_bad_particles,
                                         balance_per_interval= balance_per_interval,
+                                        interval_list=index_list
                                         # error_balance=error_balance,
                                         # mean_error_dis_dict=mean_error_dis_dict,
                                         # data_error_dis_dict=data_error_dis_dict['bad']
@@ -408,6 +417,7 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                             shuffle_mix_up_ratio, my_seed,
                                             only_mixup_bad_particles=only_mixup_bad_particles,
                                             balance_per_interval= balance_per_interval,
+                                            interval_list=index_list
                                             # error_balance=error_balance, mean_error_dis_dict=mean_error_dis_dict,
                                             # data_error_dis_dict=data_error_dis_dict['mid']
                                             ))
