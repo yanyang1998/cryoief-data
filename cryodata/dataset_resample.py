@@ -9,7 +9,8 @@ class MyResampleSampler(Sampler):
                  batch_size_all=None, shuffle_type=None, dataset_id_map=None, only_mixup_bad_particles=False,
                  error_balance=None, mean_error_dis_dict=None, data_error_dis_dict=None,
                  balance_per_interval=False,
-                 index_list=[0.3]
+                 index_list=[0.3],
+                 shuffle_mix_up_ratio=0.0,
                  ):
         self.data = data
         self.id_index_dict_pos = id_index_dict_pos
@@ -28,12 +29,15 @@ class MyResampleSampler(Sampler):
         self.data_error_dis_dict = data_error_dis_dict
         self.balance_per_interval = balance_per_interval
         self.index_list = index_list
+        self.shuffle_mix_up_ratio = shuffle_mix_up_ratio
         self.indices = resample_from_id_index_dict_finetune(self.id_index_dict_pos,
                                                             self.id_index_dict_mid,
                                                             self.id_index_dict_neg,
                                                             self.resample_num_pos,
                                                             self.resample_num_mid,
-                                                            self.resample_num_neg, batch_size_all=self.batch_size_all,
+                                                            self.resample_num_neg,
+                                                            shuffle_mix_up_ratio=shuffle_mix_up_ratio,
+                                                            batch_size_all=self.batch_size_all,
                                                             shuffle_type=self.shuffle_type, my_seed=self.my_seed,
                                                             dataset_id_map=dataset_id_map,
                                                             only_mixup_bad_particles=only_mixup_bad_particles,
@@ -138,7 +142,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                 mean_error_dis_dict=None, data_error_dis_dict=None,
                                 id_scores_dict=None, scores_bar=0.0,
                                 balance_per_interval=False,
-                                interval_list=[0.3]
+                                interval_list=[0.3],
+                                per_batch_num=1
                                 ):
     random.seed(my_seed)
     resampled_index_list = []
@@ -164,6 +169,9 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
 
     # if shuffle_type == 'class':
     #     random.shuffle(ids_list)
+    if isinstance(shuffle_type, int):
+        per_batch_num = shuffle_type
+        shuffle_type = 'batch'
     if shuffle_type == 'class':
         if ids_list is not None:
             random.shuffle(ids_list)
@@ -242,7 +250,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                              # bad_particles_ratio=bad_particles_ratio
                                                                              scores_bar=scores_bar,
                                                                              balance_per_interval=balance_per_interval,
-                                                                             interval_list=interval_list
+                                                                             interval_list=interval_list,
+
                                                                              )
             if only_mixup_bad_particles:
                 if my_id in bad_id_list_all:
@@ -257,6 +266,7 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
     if shuffle_type == 'batch':
         random.shuffle(mix_up_list)
         step = len(mix_up_list) // len(resampled_index_list)
+        batch_size_all=batch_size_all// per_batch_num
         for i in range(len(resampled_index_list)):
             # step=batch_size_all-len(resampled_index_list[i])
             resampled_index_list[i].extend(mix_up_list[:step])
@@ -280,12 +290,12 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
 
     if shuffle_type == 'batch':
         random.shuffle(final_resampled_index_list)
-        final_resampled_index_list = [item for sublist in final_resampled_index_list for item in sublist]
+        result = [item for sublist in final_resampled_index_list for item in sublist]
     else:
-        final_resampled_index_list = [item for sublist in resampled_index_list for item in sublist]
+        result = [item for sublist in resampled_index_list for item in sublist]
         if shuffle_type == 'all':
-            random.shuffle(final_resampled_index_list)
-    return final_resampled_index_list
+            random.shuffle(result)
+    return result
 
 
 def resample_from_id_index_dict_old(id_index_dict, max_number_per_sample, bad_particles_id=[]):
@@ -390,6 +400,11 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                          # data_error_dis_dict=None
                                          ):
     random.seed(my_seed)
+    if isinstance(shuffle_type,int):
+        per_batch_num=shuffle_type
+        shuffle_type='batch'
+    else:
+        per_batch_num = 1
     if shuffle_type == 'batch':
         id_index_dict_all = {**id_index_dict_pos, **id_index_dict_neg}
         resampled_index_list = resample_from_id_index_dict(id_index_dict_all, resample_num_p + resample_num_n,
@@ -397,7 +412,8 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                                            shuffle_mix_up_ratio, my_seed, dataset_id_map=dataset_id_map,
                                                            only_mixup_bad_particles=only_mixup_bad_particles,
                                                            balance_per_interval=balance_per_interval,
-                                                           interval_list=index_list
+                                                           interval_list=index_list,
+                                                           per_batch_num=per_batch_num
                                                            # error_balance=error_balance,
                                                            # mean_error_dis_dict=mean_error_dis_dict,
                                                            # data_error_dis_dict=data_error_dis_dict
