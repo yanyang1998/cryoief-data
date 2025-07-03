@@ -161,7 +161,7 @@ class CryoMetaData(MyEmFile):
 
         if os.path.exists(data_path + '/lmdb_data'):
             lmdb_env = lmdb.open(
-                data_path + '/lmdb_data/',
+                data_path + '/lmdb_data/lmdb_processed',
                 readonly=True,
                 lock=False,
                 readahead=False
@@ -170,7 +170,7 @@ class CryoMetaData(MyEmFile):
             processed_tif_txn = lmdb_env.begin()
             self.length = processed_tif_txn.stat()['entries']
             lmdb_env.close()
-            self.lmdb_path = data_path + '/lmdb_data/'
+            self.lmdb_path = data_path + '/lmdb_data/lmdb_processed'
             self.all_processed_tif_path = None
         else:
             # self.processed_tif_txn = None
