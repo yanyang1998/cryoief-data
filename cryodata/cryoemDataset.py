@@ -527,6 +527,46 @@ class CryoEMDataset(Dataset):
         self.pose_indices = AnnoyIndex(2, 'euclidean')
         self.tif_len = metadata.length
         self.lmdb_path = metadata.lmdb_path
+
+        if self.lmdb_path is not None:
+            lmdb_dir=self.lmdb_path
+            # self.lmdb_dir = lmdb_dir
+
+            self.lmdb_paths = sorted(
+                [os.path.join(lmdb_dir, name) for name in os.listdir(lmdb_dir) if
+                 os.path.isdir(os.path.join(lmdb_dir, name))])
+            if not self.lmdb_paths:
+                raise ValueError(f"No LMDB directories found in {lmdb_dir}")
+
+            self.metadata = []  # 存储每个LMDB的信息：(路径, 包含的样本数)
+            self.cumulative_sizes = [0]  # 存储样本数量的累加和，用于快速定位全局索引
+
+            print("Scanning LMDB files and building index...")
+            # 1. 遍历所有LMDB路径，只为获取样本数量，然后立刻关闭
+            for path in self.lmdb_paths:
+                try:
+                    env = lmdb.open(os.path.join(path, 'lmdb_processed'), readonly=True, lock=False, readahead=False,
+                                    meminit=False)
+                    with env.begin() as txn:
+                        num_samples = txn.stat()['entries']
+                    env.close()
+
+                    self.metadata.append((path, num_samples))
+                    self.cumulative_sizes.append(self.cumulative_sizes[-1] + num_samples)
+                except lmdb.Error as e:
+                    print(f"Warning: Could not read LMDB at {path}. Skipping. Error: {e}")
+
+            # 移除起始的0
+            self.cumulative_sizes.pop(0)
+
+            total_samples = self.cumulative_sizes[-1] if self.cumulative_sizes else 0
+            print(f"Found {len(self.lmdb_paths)} LMDBs with a total of {total_samples} samples.")
+
+            # 2. 核心：不在这里打开任何env，只在需要时打开
+            # self.open_envs = {}  # 用于缓存已打开的LMDB环境
+            self.worker_id = None  # 用于多进程DataLoader
+            self.env_processed = {}
+
         # if mrcdata.lmdb_path is not None:
         #     self.lmdb_env=lmdb.open(
         #         mrcdata.lmdb_path,
@@ -603,16 +643,16 @@ class CryoEMDataset(Dataset):
         return self.tif_len
         # return len(self.tif_path_list)
 
-    def open_lmdb(self):
-        # if mrcdata.lmdb_path is not None:
-        self.lmdb_env = lmdb.open(
-            self.lmdb_path,
-            readonly=True,
-            meminit=False,
-            max_readers=1,
-            lock=False,
-            readahead=False
-        )
+    # def open_lmdb(self):
+    #     # if mrcdata.lmdb_path is not None:
+    #     self.lmdb_env = lmdb.open(
+    #         self.lmdb_path,
+    #         readonly=True,
+    #         meminit=False,
+    #         max_readers=1,
+    #         lock=False,
+    #         readahead=False
+    #     )
 
     # @profile(precision=4)
     def __getitem__(self, item):
@@ -777,13 +817,27 @@ class CryoEMDataset(Dataset):
                     print('error for path: ' + tif_path)
         elif item is not None:
             if self.lmdb_path is not None:
-                if not hasattr(self, 'lmdb_env'):
-                    self.open_lmdb()
-                with self.lmdb_env.begin(write=False) as txn:
-                    key = f"{item}".encode()
+                # if not hasattr(self, 'lmdb_env'):
+                #     self.open_lmdb()
+                index=item
+                lmdb_idx = 0
+                while index >= self.cumulative_sizes[lmdb_idx]:
+                    lmdb_idx += 1
+
+                lmdb_path, _ = self.metadata[lmdb_idx]
+
+                # 2. 计算在该LMDB中的局部索引
+                prev_size = self.cumulative_sizes[lmdb_idx - 1] if lmdb_idx > 0 else 0
+                local_idx = index - prev_size
+
+                # 3. 获取（可能需要懒加载）对应的LMDB环境
+                _,lmdb_env,_=self._get_env(lmdb_path)
+                with lmdb_env.begin(write=False) as txn:
+                    key = f"{local_idx}".encode()
                     value = txn.get(key)
-                    data = torch.load(BytesIO(value),weights_only=False)
-                    mrcdata = data['image_processed']
+                    # data = torch.load(BytesIO(value),weights_only=False)
+                    data = pickle.loads(value)
+                    mrcdata = data
                     tif_path = ''
                     # raw_tif_path = ''
                 del data, value
@@ -850,6 +904,67 @@ class CryoEMDataset(Dataset):
                 aug2 = aug2.repeat(self.in_chans, 1, 1)
                 local_crops2 = [local_crop.repeat(self.in_chans, 1, 1) for local_crop in local_crops2]
         return local_crops1, local_crops2
+
+    def _get_env(self, lmdb_path,use_raw=False,use_processed=True,use_FT=False):
+        """
+        懒加载和缓存LMDB环境的辅助函数。
+        """
+        # 在PyTorch DataLoader的多进程模式下，每个worker是独立的进程。
+        # 我们需要在每个worker中维持自己的环境缓存。
+        worker_info = torch.utils.data.get_worker_info()
+        current_worker_id = worker_info.id if worker_info else 0
+
+        # 如果切换了worker，清空旧的缓存
+        if self.worker_id != current_worker_id:
+            self.worker_id = current_worker_id
+            # for env in self.open_envs.values():
+            #     env.close()
+            # self.open_envs.clear()
+            # for env_raw, env_processed, env_FT in zip(self.env_raw.values(), self.env_processed.values(), self.env_FT.values()):
+            #     env_raw.close()
+            #     env_processed.close()
+            #     env_FT.close()
+            # self.env_raw.clear()
+            # self.env_processed.clear()
+            # self.env_FT.clear()
+            if use_processed:
+                for env_processed in self.env_processed.values():
+                    env_processed.close()
+                    self.env_processed.clear()
+            if use_raw:
+                for env_raw in self.env_raw.values():
+                    env_raw.close()
+                    self.env_raw.clear()
+            if use_FT:
+                for env_FT in self.env_FT.values():
+                    env_FT.close()
+                    self.env_FT.clear()
+
+        # 检查缓存中是否已有此LMDB的环境
+        # if lmdb_path not in self.open_envs:
+        #     # 如果没有，就打开它并存入缓存
+        #     # readonly=True, lock=False 对于多进程读取是安全且高效的
+        #     env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False, meminit=False)
+        #     self.open_envs[lmdb_path] = env
+        if os.path.join(lmdb_path,'lmdb_processed') not in self.env_processed:
+            # 如果没有，就打开它并存入缓存
+            # readonly=True, lock=False 对于多进程读取是安全且高效的
+            if use_processed:
+                env_processed = lmdb.open(os.path.join(lmdb_path,'lmdb_processed'), readonly=True, lock=False, readahead=False, meminit=False)
+                self.env_processed[lmdb_path] = env_processed
+
+            if use_raw:
+                env_raw = lmdb.open(os.path.join(lmdb_path, 'lmdb_raw'), readonly=True, lock=False, readahead=False,
+                                    meminit=False)
+                self.env_raw[lmdb_path] = env_raw
+
+            if use_FT:
+                env_FT = lmdb.open(os.path.join(lmdb_path, 'lmdb_FT'), readonly=True, lock=False, readahead=False,
+                                   meminit=False)
+                self.env_FT[lmdb_path] = env_FT
+
+        # return self.open_envs[lmdb_path]
+        return self.env_raw[lmdb_path] if use_raw else None, self.env_processed[lmdb_path], self.env_FT[lmdb_path] if use_FT else None
 
 
 def listdir(path, list_name):  # 传入存储的list

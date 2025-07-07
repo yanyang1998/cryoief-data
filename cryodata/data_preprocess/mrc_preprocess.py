@@ -382,7 +382,9 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         new_cs_data = None
 
     if use_lmdb:
-        tmp_data_lmdb_path = dataset_save_dir + '/lmdb_data'
+        tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',mrc_dir.split('/')[-2])
+        # tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data')
+        # tmp_data_lmdb_path = dataset_save_dir
         tmp_data_save_path = dataset_save_dir
         if not os.path.exists(tmp_data_lmdb_path):
             from cryodata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
@@ -392,9 +394,10 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
             mean_len = sample_and_evaluate(image_path_list, tmp_data_save_path)
 
             # map_size = int(80 * 1024 * len(image_path_list) * 6)
-            map_size = int(80 * 1024 * len(image_path_list) * mean_len * 4)
+            map_size = {'processed':int(80 * 1024 * len(image_path_list) * mean_len * 4)}
+
             # 创建 LMDB 数据库
-            create_lmdb_dataset(image_path_list, tmp_data_lmdb_path, num_processes=num_processes, chunksize=chunksize,
+            create_lmdb_dataset(image_path_list, tmp_data_save_path, num_processes=num_processes,
                                 map_size=map_size, window=False, generate_ft_data=False,
                                 save_raw_data=False)
 
