@@ -160,17 +160,21 @@ class CryoMetaData(MyEmFile):
             self.all_tif_path_ctf_correction = None
 
         if os.path.exists(data_path + '/lmdb_data'):
-            lmdb_env = lmdb.open(
-                data_path + '/lmdb_data/lmdb_processed',
-                readonly=True,
-                lock=False,
-                readahead=False
-            )
-            # self.lmdb_env = lmdb_env
-            processed_tif_txn = lmdb_env.begin()
-            self.length = processed_tif_txn.stat()['entries']
-            lmdb_env.close()
-            self.lmdb_path = data_path + '/lmdb_data/lmdb_processed'
+            # lmdb_env = lmdb.open(
+            #     data_path + '/lmdb_data/lmdb_processed',
+            #     readonly=True,
+            #     lock=False,
+            #     readahead=False
+            # )
+            # # self.lmdb_env = lmdb_env
+            # processed_tif_txn = lmdb_env.begin()
+            # self.length = processed_tif_txn.stat()['entries']
+            # lmdb_env.close()
+            with open(data_path + '/protein_id_list.data',
+                      'rb') as filehandle:
+                protein_id_list = pickle.load(filehandle)
+            self.length = len(protein_id_list)
+            self.lmdb_path = data_path + '/lmdb_data/'
             self.all_processed_tif_path = None
         else:
             # self.processed_tif_txn = None

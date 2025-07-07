@@ -90,7 +90,7 @@ class MyResampleSampler_pretrain(Sampler):
         self.only_mixup_bad_particles = only_mixup_bad_particles
         self.id_scores_dict = id_scores_dict
         self.scores_bar = scores_bar
-        indices = resample_from_id_index_dict(id_index_dict, max_number_per_sample, batch_size_all,
+        indices = resample_from_id_index_dict(id_index_dict, max_number_per_sample, int(batch_size_all*1.2),
                                               int(shuffle_type / 2) if isinstance(shuffle_type, int) else shuffle_type,
                                               shuffle_mix_up_ratio, self.my_seed, dataset_id_map,
                                               bad_particles_ratio=bad_particles_ratio,
@@ -102,7 +102,7 @@ class MyResampleSampler_pretrain(Sampler):
         if isinstance(self.shuffle_type, int):
             combined_resampled_index_list = [
                 random.sample(indices[i], int(self.batch_size_all / self.shuffle_type)) if int(
-                    self.batch_size_all / self.shuffle_type) < len(indices[i]) else [] for i in
+                    self.batch_size_all / self.shuffle_type) <= len(indices[i]) else [] for i in
                 range(len(indices))]
             random.shuffle(combined_resampled_index_list)
             indices = [item for sublist in combined_resampled_index_list for item in sublist]
@@ -110,7 +110,7 @@ class MyResampleSampler_pretrain(Sampler):
 
     # @profile(precision=4)
     def __iter__(self):
-        indices = resample_from_id_index_dict(self.id_index_dict, self.max_number_per_sample, self.batch_size_all,
+        indices = resample_from_id_index_dict(self.id_index_dict, self.max_number_per_sample, int(1.2*self.batch_size_all),
                                               int(self.shuffle_type / 2) if isinstance(self.shuffle_type,
                                                                                        int) else self.shuffle_type,
                                               self.shuffle_mix_up_ratio, self.my_seed,
