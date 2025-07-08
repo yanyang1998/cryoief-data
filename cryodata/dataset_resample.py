@@ -78,6 +78,8 @@ class MyResampleSampler_pretrain(Sampler):
                  only_mixup_bad_particles=False, id_scores_dict=None, scores_bar=0.8):
         # if isinstance(shuffle_type, int):
         #     shuffle_type=int(shuffle_type/2)
+        if shuffle_type=='batch':
+            shuffle_type=1
         self.id_index_dict = id_index_dict
         self.batch_size_all = batch_size_all
         self.max_number_per_sample = max_number_per_sample
@@ -99,7 +101,7 @@ class MyResampleSampler_pretrain(Sampler):
                                               id_scores_dict=id_scores_dict,
                                               scores_bar=scores_bar
                                               )
-        if isinstance(self.shuffle_type, int):
+        if isinstance(self.shuffle_type, int) :
             combined_resampled_index_list = [
                 random.sample(indices[i], int(self.batch_size_all / self.shuffle_type)) if int(
                     self.batch_size_all / self.shuffle_type) <= len(indices[i]) else [] for i in
@@ -273,6 +275,7 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                              scores_bar=scores_bar,
                                                                              balance_per_interval=balance_per_interval,
                                                                              interval_list=interval_list,
+                                                                             bad_particles_ratio=bad_particles_ratio,
 
                                                                              )
             if only_mixup_bad_particles:
@@ -287,11 +290,14 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
 
     if shuffle_type == 'batch':
         random.shuffle(mix_up_list)
-        step = len(mix_up_list) // len(resampled_index_list)
         batch_size_all_new = batch_size_all // (per_batch_num * 2) if per_batch_num > 0 else batch_size_all
+        # step = len(mix_up_list)*batch_size_all_new // (len(resampled_index_list)*max_number_per_sample)
+        step = len(mix_up_list) // len(resampled_index_list)
+
         for i in range(len(resampled_index_list)):
             # step=batch_size_all-len(resampled_index_list[i])
-            resampled_index_list[i].extend(mix_up_list[:step])
+            if len(mix_up_list)>=step:
+                resampled_index_list[i].extend(mix_up_list[:step])
             random.shuffle(resampled_index_list[i])
             new_resampled_index_list_i = []
             # for ii in range(len(resampled_index_list[i]) // batch_size_all + 1):
@@ -305,7 +311,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                     resampled_index_list[i] = []
 
             final_resampled_index_list.extend(new_resampled_index_list_i)
-            mix_up_list = mix_up_list[step:]
+            if len(mix_up_list) >= step:
+                mix_up_list = mix_up_list[step:]
 
     if shuffle_type == 'class':
         random.shuffle(mix_up_list)
@@ -317,10 +324,11 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
             mix_up_list = mix_up_list[step:]
 
     if shuffle_type == 'batch':
-        if per_batch_num > 0:
-            return final_resampled_index_list
-        random.shuffle(final_resampled_index_list)
-        result = [item for sublist in final_resampled_index_list for item in sublist]
+        return final_resampled_index_list
+        # if per_batch_num > 0:
+        #     return final_resampled_index_list
+        # random.shuffle(final_resampled_index_list)
+        # result = [item for sublist in final_resampled_index_list for item in sublist]
     else:
         result = [item for sublist in resampled_index_list for item in sublist]
         if shuffle_type == 'all':
@@ -343,7 +351,7 @@ def resample_from_id_index_dict_old(id_index_dict, max_number_per_sample, bad_pa
     return resampled_index_list
 
 
-def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=None, shuffle_mix_up_ratio=0.2,
+def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=None, shuffle_mix_up_ratio=0.2,bad_particles_ratio=0.2,
                         is_bad_class=False, error_distribution=None, dataset_scores=None, scores_bar=0.8,
                         balance_per_interval=False, interval_list=[0.3]):
     # index_list = id_index_dict[my_id]
@@ -361,6 +369,15 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
 
     else:
         index_list_bad = None
+
+    if bad_particles_ratio>0 and index_list_bad is not None and len(index_list_bad) > 0:
+        if len(index_list_bad) > int(len(index_list) * bad_particles_ratio):
+            num_bad_resample= int(len(index_list) * bad_particles_ratio)
+        else:
+            num_bad_resample = len(index_list_bad)
+        index_list=random.sample(index_list, int(len(index_list) * (1-bad_particles_ratio))) + random.sample(index_list_bad, num_bad_resample)
+        random.shuffle(index_list)
+
     len_index_list = len(index_list)
     if max_number_per_sample is not None and len_index_list > max_number_per_sample:
         if error_distribution is not None:
@@ -375,34 +392,36 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
             if is_bad_class:
                 mix_up_list_added = selected_index_list[:int(len(selected_index_list) * shuffle_mix_up_ratio)]
                 new_selected_index_list = []
-            elif index_list_bad is not None:
-                if len(index_list_bad) < int(len(selected_index_list) * shuffle_mix_up_ratio):
-                    mix_up_list_added = index_list_bad
-                else:
-                    mix_up_list_added = random.sample(index_list_bad,
-                                                      int(len(selected_index_list) * shuffle_mix_up_ratio))
-                new_selected_index_list = selected_index_list[
-                                          :max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio)]
+            # elif index_list_bad is not None:
+            #     if len(index_list_bad) < int(len(selected_index_list) * shuffle_mix_up_ratio):
+            #         mix_up_list_added = index_list_bad
+            #     else:
+            #         mix_up_list_added = random.sample(index_list_bad,
+            #                                           int(len(selected_index_list) * shuffle_mix_up_ratio*))
+            #     new_selected_index_list = selected_index_list[
+            #                               :max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio)]
             else:
                 new_selected_index_list = selected_index_list[
                                           :max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio)]
                 mix_up_list_added = (
                     selected_index_list[max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio):])
         else:
-            if is_bad_class and shuffle_mix_up_ratio > 0:
-                mix_up_list_added = selected_index_list
-                new_selected_index_list = []
-            elif index_list_bad is not None and shuffle_mix_up_ratio > 0:
-                if len(index_list_bad) < int(len(index_list_bad) * shuffle_mix_up_ratio):
-                    mix_up_list_added = index_list_bad
-                else:
-
-                    mix_up_list_added = random.sample(index_list_bad, int(len(index_list_bad) * shuffle_mix_up_ratio))
-                new_selected_index_list = selected_index_list[
-                                          :max_number_per_sample - int(len(index_list_bad) * shuffle_mix_up_ratio)]
-            else:
-                new_selected_index_list = selected_index_list
-                mix_up_list_added = []
+            # if is_bad_class and shuffle_mix_up_ratio > 0:
+            #     mix_up_list_added = selected_index_list
+            #     new_selected_index_list = []
+            # elif index_list_bad is not None and shuffle_mix_up_ratio > 0:
+            #     if len(index_list_bad) < int(len(index_list_bad) * shuffle_mix_up_ratio):
+            #         mix_up_list_added = index_list_bad
+            #     else:
+            #
+            #         mix_up_list_added = random.sample(index_list_bad, int(len(index_list_bad) * shuffle_mix_up_ratio))
+            #     new_selected_index_list = selected_index_list[
+            #                               :max_number_per_sample - int(len(index_list_bad) * shuffle_mix_up_ratio)]
+            # else:
+            #     new_selected_index_list = selected_index_list
+            #     mix_up_list_added = []
+            new_selected_index_list = selected_index_list
+            mix_up_list_added = []
     else:
         if is_bad_class:
             mix_up_list_added = index_list[:int(len(index_list) * shuffle_mix_up_ratio)]
