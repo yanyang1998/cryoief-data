@@ -75,9 +75,10 @@ class MyResampleSampler(Sampler):
 class MyResampleSampler_pretrain(Sampler):
     def __init__(self, id_index_dict, batch_size_all, max_number_per_sample=None, shuffle_type=None,
                  shuffle_mix_up_ratio=0.2, dataset_id_map=None, bad_particles_ratio=0.1, combine_same_class=False,
-                 only_mixup_bad_particles=False, id_scores_dict=None, scores_bar=0.8):
+                 only_mixup_bad_particles=False, id_scores_dict=None, scores_bar=0.8,):
         # if isinstance(shuffle_type, int):
         #     shuffle_type=int(shuffle_type/2)
+
         if shuffle_type=='batch':
             shuffle_type=1
         self.id_index_dict = id_index_dict

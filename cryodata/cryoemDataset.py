@@ -200,8 +200,10 @@ class CryoMetaData(MyEmFile):
         if os.path.exists(data_path + '/labels_classification.data'):
             with open(data_path + '/labels_classification.data', 'rb') as filehandle:
                 self.labels_classification = pickle.load(filehandle)
+            if len(self.labels_classification)==0:
+                self.labels_classification = [1] * self.length
         else:
-            self.labels_classification = [-1] * self.length
+            self.labels_classification = [1] * self.length
 
         # with open(path_out + 'output_tif_select_label.data', 'rb') as filehandle:
         #     self.tifs_selection_label = pickle.load(filehandle)
@@ -253,6 +255,14 @@ class CryoMetaData(MyEmFile):
                 self.pose_id_map = pickle.load(filehandle)
         else:
             self.pose_id_map = None
+
+        if os.path.exists(data_path + '/pose_id_map2.data'):
+            # self.pose_id_map = json.load(open(data_path + '/pose_id_map.data', 'r'))
+            with open(data_path + '/pose_id_map2.data',
+                      'rb') as filehandle:
+                self.pose_id_map2 = pickle.load(filehandle)
+        else:
+            self.pose_id_map2 = None
 
         # with open(data_path + '/labels_for_training.data',
         #           'rb') as filehandle:
@@ -476,7 +486,7 @@ class CryoMetaData(MyEmFile):
         return id_index_dict_pos, id_index_dict_neg, id_index_dict_mid, (
             resample_num_p, resample_num_n, resample_num_m)
 
-    def preprocess_trainset_index_pretrain(self, protein_id_dict=None, protein_id_list=None):
+    def preprocess_trainset_index_pretrain(self, protein_id_dict=None, protein_id_list=None,id_map_for_filtering=None):
         if protein_id_dict is not None and protein_id_list is not None:
             target_protein_id_dict = protein_id_dict
             target_protein_id_list = protein_id_list
@@ -506,7 +516,12 @@ class CryoMetaData(MyEmFile):
         protein_id_list_np = np.array(target_protein_id_list)
         for id in target_protein_id_dict.values():
             # aaa = np.where(protein_id_list_np == id)
-            id_index_dict[id] = np.where(protein_id_list_np == id)[0].tolist()
+            # id_index_dict[id] = np.where(protein_id_list_np == id)[0].tolist()
+            id_selected=np.where(protein_id_list_np == id)[0].tolist()
+            if id_map_for_filtering is not None:
+                id_index_dict[id] = [item for item in id_selected if item in id_map_for_filtering.keys()]
+            else:
+                id_index_dict[id] = id_selected
             id_scores_dict[id] = scores_np[id_index_dict[id]]
         self.id_index_dict = id_index_dict
         return id_index_dict, dataset_id_map,id_scores_dict
