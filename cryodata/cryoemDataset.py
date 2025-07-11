@@ -200,7 +200,7 @@ class CryoMetaData(MyEmFile):
         if os.path.exists(data_path + '/labels_classification.data'):
             with open(data_path + '/labels_classification.data', 'rb') as filehandle:
                 self.labels_classification = pickle.load(filehandle)
-            if len(self.labels_classification)==0:
+            if len(self.labels_classification) == 0:
                 self.labels_classification = [1] * self.length
         else:
             self.labels_classification = [1] * self.length
@@ -385,9 +385,9 @@ class CryoMetaData(MyEmFile):
         protein_id_list_np = np.array(self.protein_id_list)
         labels_classification_np = np.array(self.labels_classification)
         for name, id in self.protein_id_dict.items():
-            item_pos={}
-            item_neg={}
-            item_mid={}
+            item_pos = {}
+            item_neg = {}
+            item_mid = {}
             # if name not in dataset_except_names:
             if name.lower().endswith('good'):
                 # if name in valset_name and is_valset:
@@ -397,7 +397,7 @@ class CryoMetaData(MyEmFile):
                 #     if data_error_dis_dict is not None:
                 #         data_error_dis_dict_pos[id] = data_error_dis_dict[id] / np.sum(data_error_dis_dict[id])
                 item_pos['id'] = np.where(protein_id_list_np == id)[0].tolist()
-                item_pos['score']=[1.0]*len(item_pos['id'])
+                item_pos['score'] = [1.0] * len(item_pos['id'])
             elif name.lower().endswith('bad'):
                 # if name in valset_name and is_valset:
                 #     id_index_dict_neg[id] = np.where(protein_id_list_np == id)[0].tolist()
@@ -406,7 +406,7 @@ class CryoMetaData(MyEmFile):
                 #     if data_error_dis_dict is not None:
                 #         data_error_dis_dict_neg[id] = data_error_dis_dict[id] / np.sum(data_error_dis_dict[id])
                 item_neg['id'] = np.where(protein_id_list_np == id)[0].tolist()
-                item_neg['score']=[0.0]*len(item_neg['id'])
+                item_neg['score'] = [0.0] * len(item_neg['id'])
             else:
                 protein_index = np.where(protein_id_list_np == id)[0]
                 pos_index = protein_index[labels_classification_np[protein_index] >= middle_range_balance_train[1]]
@@ -486,7 +486,18 @@ class CryoMetaData(MyEmFile):
         return id_index_dict_pos, id_index_dict_neg, id_index_dict_mid, (
             resample_num_p, resample_num_n, resample_num_m)
 
-    def preprocess_trainset_index_pretrain(self, protein_id_dict=None, protein_id_list=None,id_map_for_filtering=None):
+    def preprocess_trainset_index_pretrain(self, protein_id_dict=None, protein_id_list=None, id_map_for_filtering=None,
+                                           score_bar=None):
+        if id_map_for_filtering is not None:
+            self.pose_id_map2 = id_map_for_filtering
+
+        if score_bar is not None and self.pose_id_map2 is not None and self.labels_classification is not None:
+            self.pose_id_map2 = {
+                key: value
+                for key, value in id_map_for_filtering.items()
+                if self.labels_classification[key] > score_bar
+            }
+
         if protein_id_dict is not None and protein_id_list is not None:
             target_protein_id_dict = protein_id_dict
             target_protein_id_list = protein_id_list
@@ -511,20 +522,20 @@ class CryoMetaData(MyEmFile):
         # for i, id in enumerate(self.protein_id_list):
         #     id_index_dict[id].append(i)
         id_index_dict = {id: [] for id in target_protein_id_dict.values()}
-        id_scores_dict= {}
-        scores_np= np.array(self.labels_classification)
+        id_scores_dict = {}
+        scores_np = np.array(self.labels_classification)
         protein_id_list_np = np.array(target_protein_id_list)
         for id in target_protein_id_dict.values():
             # aaa = np.where(protein_id_list_np == id)
             # id_index_dict[id] = np.where(protein_id_list_np == id)[0].tolist()
-            id_selected=np.where(protein_id_list_np == id)[0].tolist()
-            if id_map_for_filtering is not None:
+            id_selected = np.where(protein_id_list_np == id)[0].tolist()
+            if self.pose_id_map2 is not None:
                 id_index_dict[id] = [item for item in id_selected if item in id_map_for_filtering.keys()]
             else:
                 id_index_dict[id] = id_selected
             id_scores_dict[id] = scores_np[id_index_dict[id]]
         self.id_index_dict = id_index_dict
-        return id_index_dict, dataset_id_map,id_scores_dict
+        return id_index_dict, dataset_id_map, id_scores_dict
 
 
 class CryoEMDataset(Dataset):
@@ -544,7 +555,7 @@ class CryoEMDataset(Dataset):
         self.lmdb_path = metadata.lmdb_path
 
         if self.lmdb_path is not None:
-            lmdb_dir=self.lmdb_path
+            lmdb_dir = self.lmdb_path
             # self.lmdb_dir = lmdb_dir
 
             self.lmdb_paths = sorted(
@@ -703,7 +714,7 @@ class CryoEMDataset(Dataset):
         if self.needs_aug2:
             mrcdata2 = None
             is_random_rotate_transform = True if self.random_rotate_transform is not None else False
-            item2, weight,is_mix_pos = self.get_item2(item)
+            item2, weight, is_mix_pos = self.get_item2(item)
             if item2 is not None:
                 mrcdata2 = self.get_mrcdata(item=item2)
             elif self.slice_setting is not None and random.random() < self.slice_setting['p']:
@@ -712,8 +723,10 @@ class CryoEMDataset(Dataset):
                 mrcdata2 = mrcdata
             # else:
             #     is_random_rotate_transform = False
-            aug1 = self.mrcdata_aug(mrcdata, is_random_rotate_transform=is_random_rotate_transform,is_mix_pos=is_mix_pos)
-            aug2 = self.mrcdata_aug(mrcdata2, is_random_rotate_transform=is_random_rotate_transform,is_mix_pos=is_mix_pos)
+            aug1 = self.mrcdata_aug(mrcdata, is_random_rotate_transform=is_random_rotate_transform,
+                                    is_mix_pos=is_mix_pos)
+            aug2 = self.mrcdata_aug(mrcdata2, is_random_rotate_transform=is_random_rotate_transform,
+                                    is_mix_pos=is_mix_pos)
         else:
             aug1 = self.mrcdata_aug(mrcdata)
             aug2 = None
@@ -738,7 +751,7 @@ class CryoEMDataset(Dataset):
     def get_item2(self, item):
         item2 = None
         weight = 1
-        is_mix_pos=False
+        is_mix_pos = False
         if self.weight_for_contrastive_classification_label > 0:
             if random.random() < self.weight_for_contrastive_classification_label:
                 if self.labels_classification[item] == 1:
@@ -755,10 +768,10 @@ class CryoEMDataset(Dataset):
                 # self.pose_indices.load(os.path.join(self.processed_data_path, 'pose_data', protein_name + '_pose.ann'))
                 # nearest=self.pose_indices.get_nns_by_item(item-min(item_list), int(len(item_list)/20),include_distances=False)
                 # item2 = random.choice(nearest[1:])+ min(item_list)
-                nearest, min_id, protein_name, pose_items_id,item1_pose_id = self.get_nearest_item(item)
+                nearest, min_id, protein_name, pose_items_id, item1_pose_id = self.get_nearest_item(item)
                 if nearest is not None and len(nearest) > 1:
-                    item2_pose_id=weighted_random_choice_linear(nearest[1:],with_weight=False)
-                    item2 = pose_items_id[item2_pose_id]+ min_id
+                    item2_pose_id = weighted_random_choice_linear(nearest[1:], with_weight=False)
+                    item2 = pose_items_id[item2_pose_id] + min_id
 
                     # if item-min(item_list)<0:
                     #     print('item is less than min(item_list): ' + str(item) + ' ' + str(min(item_list)))
@@ -767,16 +780,16 @@ class CryoEMDataset(Dataset):
                     #     print('item2 is less than min(item_list): ' + str(item2) + ' ' + str(min(item_list)))
                     #     print('protein_name: ' + protein_name)
                     weight = sigmoid(self.mix_pos_setting['sigma'] * (
-                        (3.5 - self.pose_indices.get_distance(item1_pose_id, item2_pose_id) )/3.5
-                                - self.mix_pos_setting['bias']))
+                            (3.5 - self.pose_indices.get_distance(item1_pose_id, item2_pose_id)) / 3.5
+                            - self.mix_pos_setting['bias']))
                     self.pose_indices.unload()
-                    is_mix_pos=True
+                    is_mix_pos = True
 
                 # if protein_name=='11307_J504_good':
                 #     pass
-        return item2, float(weight),is_mix_pos
+        return item2, float(weight), is_mix_pos
 
-    def  get_nearest_item(self, item, N=None,pose_divide=None):
+    def get_nearest_item(self, item, N=None, pose_divide=None):
 
         if N is None:
             N = self.mix_pos_setting['pose_search_N']
@@ -801,7 +814,7 @@ class CryoEMDataset(Dataset):
                                                         include_distances=False)
             pose_items_id = list(self.pose_id_map[protein_id].keys())
             # nearest=nearest[1:]
-        return nearest, min_id, protein_name, pose_items_id,item1_pose_id
+        return nearest, min_id, protein_name, pose_items_id, item1_pose_id
 
     def get_corr_slice(self, item):
         tif_path = self.tif_path_list[item]
@@ -834,7 +847,7 @@ class CryoEMDataset(Dataset):
             if self.lmdb_path is not None:
                 # if not hasattr(self, 'lmdb_env'):
                 #     self.open_lmdb()
-                index=item
+                index = item
                 lmdb_idx = 0
                 while index >= self.cumulative_sizes[lmdb_idx]:
                     lmdb_idx += 1
@@ -846,7 +859,7 @@ class CryoEMDataset(Dataset):
                 local_idx = index - prev_size
 
                 # 3. 获取（可能需要懒加载）对应的LMDB环境
-                _,lmdb_env,_=self._get_env(lmdb_path)
+                _, lmdb_env, _ = self._get_env(lmdb_path)
                 with lmdb_env.begin(write=False) as txn:
                     key = f"{local_idx}".encode()
                     value = txn.get(key)
@@ -872,10 +885,10 @@ class CryoEMDataset(Dataset):
                     print('error for path: ' + tif_path)
         return mrcdata
 
-    def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True,is_mix_pos=False):
+    def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False):
         if mrcdata.mode != 'L':
             mrcdata = to_int8(mrcdata)
-        if  is_random_rotate_transform:
+        if is_random_rotate_transform:
             if is_mix_pos and self.random_rotate_transform_mix_pos is not None:
                 mrcdata_rotate1 = self.random_rotate_transform_mix_pos(mrcdata)
             elif self.random_rotate_transform is not None:
@@ -885,12 +898,12 @@ class CryoEMDataset(Dataset):
         else:
             mrcdata_rotate1 = mrcdata
         if is_mix_pos:
-            aug=self.transform_mix_pos(mrcdata_rotate1)
+            aug = self.transform_mix_pos(mrcdata_rotate1)
         else:
             aug = self.transform(mrcdata_rotate1)
         return aug
 
-    def get_transforms(self, transforms,transforms_list_mix_pos =None):
+    def get_transforms(self, transforms, transforms_list_mix_pos=None):
         self.transform = transforms[0]
         self.local_crops_transform = transforms[1]
         self.random_rotate_transform = transforms[2]
@@ -920,7 +933,7 @@ class CryoEMDataset(Dataset):
                 local_crops2 = [local_crop.repeat(self.in_chans, 1, 1) for local_crop in local_crops2]
         return local_crops1, local_crops2
 
-    def _get_env(self, lmdb_path,use_raw=False,use_processed=True,use_FT=False):
+    def _get_env(self, lmdb_path, use_raw=False, use_processed=True, use_FT=False):
         """
         懒加载和缓存LMDB环境的辅助函数。
         """
@@ -961,11 +974,12 @@ class CryoEMDataset(Dataset):
         #     # readonly=True, lock=False 对于多进程读取是安全且高效的
         #     env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False, meminit=False)
         #     self.open_envs[lmdb_path] = env
-        if os.path.join(lmdb_path,'lmdb_processed') not in self.env_processed:
+        if os.path.join(lmdb_path, 'lmdb_processed') not in self.env_processed:
             # 如果没有，就打开它并存入缓存
             # readonly=True, lock=False 对于多进程读取是安全且高效的
             if use_processed:
-                env_processed = lmdb.open(os.path.join(lmdb_path,'lmdb_processed'), readonly=True, lock=False, readahead=False, meminit=False)
+                env_processed = lmdb.open(os.path.join(lmdb_path, 'lmdb_processed'), readonly=True, lock=False,
+                                          readahead=False, meminit=False)
                 self.env_processed[lmdb_path] = env_processed
 
             if use_raw:
@@ -979,7 +993,8 @@ class CryoEMDataset(Dataset):
                 self.env_FT[lmdb_path] = env_FT
 
         # return self.open_envs[lmdb_path]
-        return self.env_raw[lmdb_path] if use_raw else None, self.env_processed[lmdb_path], self.env_FT[lmdb_path] if use_FT else None
+        return self.env_raw[lmdb_path] if use_raw else None, self.env_processed[lmdb_path], self.env_FT[
+            lmdb_path] if use_FT else None
 
 
 def listdir(path, list_name):  # 传入存储的list
@@ -995,7 +1010,7 @@ def sigmoid(x):
     return 1.0 / (1 + np.exp(-x))
 
 
-def weighted_random_choice_linear(my_list,with_weight=True):
+def weighted_random_choice_linear(my_list, with_weight=True):
     """
     使用线性递减的权重从列表中随机抽取一个元素。
     """
