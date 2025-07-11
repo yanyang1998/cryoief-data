@@ -492,12 +492,16 @@ class CryoMetaData(MyEmFile):
             self.pose_id_map2 = id_map_for_filtering
 
         if score_bar is not None and self.pose_id_map2 is not None and self.labels_classification is not None:
-            self.pose_id_map2 = {
-                key: value
-                for key, value in id_map_for_filtering.items()
-                if self.labels_classification[key] > score_bar
-            }
+            filtered_id_all=[key for key, value in self.pose_id_map2.items() if self.labels_classification[key] > score_bar]
+            self.pose_id_map2 = {key: i for i, key in enumerate(filtered_id_all)}
+            # self.pose_id_map2 = {
+            #     key: value
+            #     for key, value in id_map_for_filtering.items()
+            #     if self.labels_classification[key] > score_bar
+            # }
 
+        self.labels_class=[self.protein_id_list[i] for i in self.pose_id_map2.keys()] if self.pose_id_map2 is not None else self.labels_classification
+        # aaa=[i for i in self.labels_classification if i >score_bar]
         if protein_id_dict is not None and protein_id_list is not None:
             target_protein_id_dict = protein_id_dict
             target_protein_id_list = protein_id_list
@@ -530,7 +534,7 @@ class CryoMetaData(MyEmFile):
             # id_index_dict[id] = np.where(protein_id_list_np == id)[0].tolist()
             id_selected = np.where(protein_id_list_np == id)[0].tolist()
             if self.pose_id_map2 is not None:
-                id_index_dict[id] = [item for item in id_selected if item in id_map_for_filtering.keys()]
+                id_index_dict[id] = [item for item in id_selected if item in self.pose_id_map2.keys()]
             else:
                 id_index_dict[id] = id_selected
             id_scores_dict[id] = scores_np[id_index_dict[id]]
