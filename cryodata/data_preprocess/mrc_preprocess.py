@@ -139,12 +139,21 @@ def mrcs_resize(mrcs, width, height, is_freqs=True):
     若在频域下采样，则保持原逻辑。
     若在图像域下采样，则调用优化后的 `downsample_Image`。
     """
-    if is_freqs and width < mrcs.shape[1]:
+    if isinstance(mrcs,Image.Image):
+        mrcs_np = np.array(mrcs)
+    elif isinstance(mrcs,np.ndarray):
+        mrcs_np = mrcs
+    else:
+        mrcs_np = np.array(mrcs).astype(np.float32)
+
+    if is_freqs and width < mrcs_np.shape[1]:
         # 频域下采样逻辑保持不变，它已经是基于FFT的向量化操作
-        resized_mrcs = downsample_freq(mrcs, width)
+        resized_mrcs = downsample_freq(mrcs_np, width)
     else:
         # 图像域下采样，调用新的高效函数
-        resized_mrcs = downsample_Image(mrcs, width)
+        resized_mrcs = downsample_Image(mrcs_np, width)
+    if isinstance(mrcs,Image.Image):
+        resized_mrcs = Image.fromarray(resized_mrcs)
     return resized_mrcs
 
 

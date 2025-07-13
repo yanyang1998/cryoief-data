@@ -487,7 +487,7 @@ class CryoMetaData(MyEmFile):
             resample_num_p, resample_num_n, resample_num_m)
 
     def preprocess_trainset_index_pretrain(self, protein_id_dict=None, protein_id_list=None, id_map_for_filtering=None,
-                                           score_bar=None):
+                                           score_bar=None,is_filtering=True):
         if id_map_for_filtering is not None:
             self.pose_id_map2 = id_map_for_filtering
 
@@ -500,7 +500,7 @@ class CryoMetaData(MyEmFile):
             #     if self.labels_classification[key] > score_bar
             # }
 
-        self.labels_class=[self.protein_id_list[i] for i in self.pose_id_map2.keys()] if self.pose_id_map2 is not None else self.labels_classification
+        self.labels_class=[self.protein_id_list[i] for i in self.pose_id_map2.keys()] if (self.pose_id_map2 is not None and is_filtering) else self.labels_classification
         # aaa=[i for i in self.labels_classification if i >score_bar]
         if protein_id_dict is not None and protein_id_list is not None:
             target_protein_id_dict = protein_id_dict
@@ -533,7 +533,7 @@ class CryoMetaData(MyEmFile):
             # aaa = np.where(protein_id_list_np == id)
             # id_index_dict[id] = np.where(protein_id_list_np == id)[0].tolist()
             id_selected = np.where(protein_id_list_np == id)[0].tolist()
-            if self.pose_id_map2 is not None:
+            if self.pose_id_map2 is not None and is_filtering:
                 id_index_dict[id] = [item for item in id_selected if item in self.pose_id_map2.keys()]
             else:
                 id_index_dict[id] = id_selected
@@ -802,7 +802,9 @@ class CryoEMDataset(Dataset):
 
         protein_id = self.protein_id_list[item]
         item_list = self.id_index_dict.get(protein_id, [])
-        min_id = min(item_list)
+        min_id=self.cumulative_sizes[protein_id-1] if protein_id > 0 else 0
+
+        # min_id = min(item_list)
         nearest = None
         protein_name = self.protein_id_dict_reverse[protein_id]
         pose_items_id = []
