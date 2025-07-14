@@ -133,7 +133,7 @@ def sample_and_calculate_mean_std(path_list, Cnum=1000, Ctimes=1, is_normalize=T
 
 
 
-def mrcs_resize(mrcs, width, height, is_freqs=True):
+def mrcs_resize(mrcs, width, height=None, is_freqs=True):
     """
     [已优化] 调整图像尺寸的主函数。
     若在频域下采样，则保持原逻辑。

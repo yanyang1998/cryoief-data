@@ -904,10 +904,10 @@ class CryoEMDataset(Dataset):
         return mrcdata
 
     def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False):
-        if isinstance(mrcdata,np.ndarray):
+        if isinstance(mrcdata,np.ndarray) :
             mrcdata =Image.fromarray(mrcdata)
-        if mrcdata.mode != 'L':
-            mrcdata = to_int8(mrcdata)
+        # # if mrcdata.mode != 'L':
+        #     mrcdata = to_int8(mrcdata)
         if is_random_rotate_transform:
             if is_mix_pos and self.random_rotate_transform_mix_pos is not None:
                 mrcdata_rotate1 = self.random_rotate_transform_mix_pos(mrcdata)
