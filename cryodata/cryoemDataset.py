@@ -1,7 +1,7 @@
 # from models.get_transformers import to_int8
 from cryodata.data_preprocess.mrc_preprocess import to_int8
 import numpy as np
-# from PIL import Image
+from PIL import Image
 from torch.utils.data import Dataset
 # from torchvision import transforms
 import os
@@ -557,10 +557,12 @@ class CryoEMDataset(Dataset):
                  weight_for_contrastive_classification_label=0.0,
                  use_triplex_labels=False, bar_score=0.0,
                  in_chans=1, needs_aug2=False,
+                 pretrain_128=False
                  ):
         self.pose_indices = AnnoyIndex(2, 'euclidean')
         self.tif_len = metadata.length
         self.lmdb_path = metadata.lmdb_path
+        self.pretrain_128 = pretrain_128
 
         if self.lmdb_path is not None:
             lmdb_dir = self.lmdb_path
@@ -600,6 +602,8 @@ class CryoEMDataset(Dataset):
             # self.open_envs = {}  # 用于缓存已打开的LMDB环境
             self.worker_id = None  # 用于多进程DataLoader
             self.env_processed = {}
+            self.env_raw= {}
+            self.env_FT = {}
 
         # if mrcdata.lmdb_path is not None:
         #     self.lmdb_env=lmdb.open(
@@ -869,7 +873,11 @@ class CryoEMDataset(Dataset):
                 local_idx = index - prev_size
 
                 # 3. 获取（可能需要懒加载）对应的LMDB环境
-                _, lmdb_env, _ = self._get_env(lmdb_path)
+                lmdb_env_r, lmdb_env_p, _ = self._get_env(lmdb_path,use_raw=self.pretrain_128)
+                if self.pretrain_128:
+                    lmdb_env = lmdb_env_r
+                else:
+                    lmdb_env = lmdb_env_p
                 with lmdb_env.begin(write=False) as txn:
                     key = f"{local_idx}".encode()
                     value = txn.get(key)
@@ -896,6 +904,8 @@ class CryoEMDataset(Dataset):
         return mrcdata
 
     def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False):
+        if isinstance(mrcdata,np.ndarray):
+            mrcdata =Image.fromarray(mrcdata)
         if mrcdata.mode != 'L':
             mrcdata = to_int8(mrcdata)
         if is_random_rotate_transform:

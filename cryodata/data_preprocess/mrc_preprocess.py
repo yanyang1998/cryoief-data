@@ -146,12 +146,14 @@ def mrcs_resize(mrcs, width, height, is_freqs=True):
     else:
         mrcs_np = np.array(mrcs).astype(np.float32)
 
-    if is_freqs and width < mrcs_np.shape[1]:
+    if is_freqs and width < mrcs_np.shape[-1]:
         # 频域下采样逻辑保持不变，它已经是基于FFT的向量化操作
         resized_mrcs = downsample_freq(mrcs_np, width)
     else:
         # 图像域下采样，调用新的高效函数
         resized_mrcs = downsample_Image(mrcs_np, width)
+    if mrcs_np.ndim == 2 and resized_mrcs.ndim == 3:
+        resized_mrcs =np.squeeze(resized_mrcs, axis=0)
     if isinstance(mrcs,Image.Image):
         resized_mrcs = Image.fromarray(resized_mrcs)
     return resized_mrcs
@@ -178,6 +180,8 @@ def downsample_Image(imgs, resolution_out):
     [已优化] 使用scipy.ndimage.zoom进行批量图像缩放。
     这比逐个调用PIL进行缩放快几个数量级。
     """
+    if imgs.ndim == 2:
+        imgs = imgs[np.newaxis, :, :]
     N, H, W = imgs.shape
     if H == resolution_out and W == resolution_out:
         return imgs.astype('float32')
