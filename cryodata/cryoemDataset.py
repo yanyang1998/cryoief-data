@@ -504,7 +504,7 @@ class CryoMetaData(MyEmFile):
             #     if self.labels_classification[key] > score_bar
             # }
 
-        self.labels_class=[self.protein_id_list[i] for i in self.pose_id_map2.keys()] if (self.pose_id_map2 is not None and is_filtering) else self.labels_classification
+        self.labels_class=[self.protein_id_list[i] for i in self.pose_id_map2.keys()] if (self.pose_id_map2 is not None and is_filtering) else self.protein_id_list
         # aaa=[i for i in self.labels_classification if i >score_bar]
         if protein_id_dict is not None and protein_id_list is not None:
             target_protein_id_dict = protein_id_dict
