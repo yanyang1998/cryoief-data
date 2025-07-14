@@ -248,21 +248,25 @@ class CryoMetaData(MyEmFile):
             self.data_error_dis_dict = {self.protein_id_dict[key]: np.array(value) for key, value in
                                         data_error_dict.items()}
 
+        self.pose_id_map = None
         if os.path.exists(data_path + '/pose_id_map.data'):
             # self.pose_id_map = json.load(open(data_path + '/pose_id_map.data', 'r'))
             with open(data_path + '/pose_id_map.data',
                       'rb') as filehandle:
-                self.pose_id_map = pickle.load(filehandle)
-        else:
-            self.pose_id_map = None
+                pose_id_map = pickle.load(filehandle)
+            if len(pose_id_map) > 0:
+                self.pose_id_map = pose_id_map
 
+        self.pose_id_map2 = None
         if os.path.exists(data_path + '/pose_id_map2.data'):
             # self.pose_id_map = json.load(open(data_path + '/pose_id_map.data', 'r'))
             with open(data_path + '/pose_id_map2.data',
                       'rb') as filehandle:
-                self.pose_id_map2 = pickle.load(filehandle)
-        else:
-            self.pose_id_map2 = None
+                pose_id_map2 = pickle.load(filehandle)
+            if len(pose_id_map2) > 0:
+                self.pose_id_map2 = pose_id_map2
+
+
 
         # with open(data_path + '/labels_for_training.data',
         #           'rb') as filehandle:
