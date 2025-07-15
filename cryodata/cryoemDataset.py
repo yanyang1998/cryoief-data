@@ -564,13 +564,21 @@ class CryoEMDataset(Dataset):
         self.lmdb_path = metadata.lmdb_path
         self.pretrain_128 = pretrain_128
 
+        self.protein_id_list = metadata.protein_id_list
+        self.protein_id_dict = metadata.protein_id_dict
+        self.protein_id_dict_reverse = {v: k for k, v in self.protein_id_dict.items()}
+
+
         if self.lmdb_path is not None:
+            lmdb_dir_name_list=list(self.protein_id_dict.keys())
             lmdb_dir = self.lmdb_path
             # self.lmdb_dir = lmdb_dir
 
-            self.lmdb_paths = sorted(
-                [os.path.join(lmdb_dir, name) for name in os.listdir(lmdb_dir) if
-                 os.path.isdir(os.path.join(lmdb_dir, name))])
+            # self.lmdb_paths = sorted(
+            #     [os.path.join(lmdb_dir, name) for name in lmdb_dir_name_list if
+            #      os.path.isdir(os.path.join(lmdb_dir, name))])
+            self.lmdb_paths = [os.path.join(lmdb_dir, name) for name in lmdb_dir_name_list if
+                 os.path.isdir(os.path.join(lmdb_dir, name))]
             if not self.lmdb_paths:
                 raise ValueError(f"No LMDB directories found in {lmdb_dir}")
 
@@ -636,10 +644,6 @@ class CryoEMDataset(Dataset):
             self.bar_score = 1 - bar_score
         else:
             self.bar_score = bar_score
-
-        self.protein_id_list = metadata.protein_id_list
-        self.protein_id_dict = metadata.protein_id_dict
-        self.protein_id_dict_reverse = {v: k for k, v in self.protein_id_dict.items()}
 
         if metadata.particles_id is not None:
             self.particles_id = metadata.particles_id
