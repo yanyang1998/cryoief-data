@@ -4,12 +4,12 @@ import numpy as np
 import lmdb
 import multiprocessing
 from PIL import Image
-from io import BytesIO
+# from io import BytesIO
 from tqdm import tqdm
-import torch
-from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask
+# import torch
+from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask,raw_csdata_process_from_cryosparc_dir
 from . import fft
-from . import mrc
+# from . import mrc
 import gc
 import mrcfile
 
@@ -293,3 +293,23 @@ def lmdb_process_item(args):
         print(f"Error processing {data_path}: {str(e)}")
         gc.collect()
         return (idx, [], {}, None)
+
+def process_one_dataset_paths(dir_one_dataset,num_resample_per_dataset=40000):
+    mrc_dir_list, mrcs_names_list_process ,num_resample_mrcs_per_dataset= [], [],[]
+    if os.path.isdir(dir_one_dataset):
+        try:
+            mrc_dir, mrcs_names_list_temp = get_mrcs_names_list_cs(dir_one_dataset)
+            mrc_dir_list.extend([mrc_dir] * len(mrcs_names_list_temp))
+            mrcs_names_list_process.extend(mrcs_names_list_temp)
+            if mrcs_names_list_temp:
+                num_resample_mrcs_per_dataset.extend(
+                    [int(num_resample_per_dataset / len(mrcs_names_list_temp))] * len(mrcs_names_list_temp))
+        except Exception as e:
+            print(f"Could not process directory {dir_one_dataset}: {e}")
+    return mrc_dir_list, mrcs_names_list_process ,num_resample_mrcs_per_dataset
+
+def get_mrcs_names_list_cs(mrcfile_path):
+    cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(mrcfile_path)
+    blob_path_list = cs_data['blob/path'].tolist()
+    mrcs_names_list = [path.split('/')[-1] for path in blob_path_list]
+    return mrc_dir, list(dict.fromkeys(mrcs_names_list))
