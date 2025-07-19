@@ -8,7 +8,7 @@ from PIL import Image
 from tqdm import tqdm
 # import torch
 from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask,raw_csdata_process_from_cryosparc_dir
-from . import fft
+from . import fft,mrc
 # from . import mrc
 import gc
 import mrcfile
@@ -209,8 +209,10 @@ def lmdb_process_item(args):
     idx, data_path, resize, raw_resize, is_to_int8, window, window_r, \
         generate_processed_data, generate_ft_data, save_raw_data, num_resample_mrcs = args
     try:
-        with mrcfile.open(data_path, permissive=True) as mrc:
-            np_image_raw = mrc.data.astype(np.float32)
+        # with mrcfile.open(data_path, permissive=True) as mrc:
+        #     np_image_raw = mrc.data.astype(np.float32)
+        np_image_raw, _ = mrc.parse_mrc(data_path)
+        np_image_raw = np_image_raw.astype(np.float32)
         n_total = np_image_raw.shape[0]
 
         np_image_processed = None
