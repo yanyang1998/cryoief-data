@@ -585,7 +585,7 @@ class CryoEMDataset(Dataset):
             self.metadata = []  # 存储每个LMDB的信息：(路径, 包含的样本数)
             self.cumulative_sizes = [0]  # 存储样本数量的累加和，用于快速定位全局索引
 
-            print("Scanning LMDB files and building index...")
+            # print("Scanning LMDB files and building index...")
             # 1. 遍历所有LMDB路径，只为获取样本数量，然后立刻关闭
             for path in self.lmdb_paths:
                 try:
@@ -604,7 +604,7 @@ class CryoEMDataset(Dataset):
             self.cumulative_sizes.pop(0)
 
             total_samples = self.cumulative_sizes[-1] if self.cumulative_sizes else 0
-            print(f"Found {len(self.lmdb_paths)} LMDBs with a total of {total_samples} samples.")
+            # print(f"Found {len(self.lmdb_paths)} LMDBs with a total of {total_samples} samples.")
 
             # 2. 核心：不在这里打开任何env，只在需要时打开
             # self.open_envs = {}  # 用于缓存已打开的LMDB环境
