@@ -300,7 +300,8 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path):
         mrc_dir = os.path.join(raw_data_path, 'downsample')
     elif particles_cs_path is not None and particles_cs_path.endswith('split_0000.cs'):
         raw_dir = '/'.join(raw_data_path.split('/')[0:-2])
-        mrc_dir = raw_dir + '/' + '/'.join(cs_data['blob/path'][0].split('/')[0:-1]) + '/'
+        # mrc_dir = raw_dir + '/' + '/'.join(cs_data['blob/path'][0].split('/')[0:-1]) + '/'
+        mrc_dir=[os.path.join(raw_dir,'/'.join(cs_data['blob/path'][i].split('/')[0:-1])) for i in range(len(cs_data))]
     elif particles_cs_path is not None and particles_cs_path.endswith('downsampled_particles.cs'):
         raw_dir = '/'.join(raw_data_path.split('/')[0:-1])
         mrc_dir = raw_dir
@@ -443,14 +444,18 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         new_cs_data = None
 
     if use_lmdb:
-        tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',mrc_dir.split('/')[-2])
+        # tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',mrc_dir.split('/')[-2] if isinstance(mrc_dir,str) else mrc_dir[0].split('/')[-2])
+        tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',raw_dataset_dir.split('/')[-1])
         # tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data')
         # tmp_data_lmdb_path = dataset_save_dir
         tmp_data_save_path = dataset_save_dir
         if not os.path.exists(tmp_data_lmdb_path):
             from cryodata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
 
-            image_path_list = [os.path.join(mrc_dir, mrcs_name) for mrcs_name in mrcs_names_list_process]
+            if isinstance(mrc_dir,str):
+                image_path_list = [os.path.join(mrc_dir, mrcs_name) for mrcs_name in mrcs_names_list_process]
+            else:
+                image_path_list = [os.path.join(dir, mrcs_name) for mrcs_name,dir in zip(mrcs_names_list_process,mrc_dir)]
 
             mean_len = sample_and_evaluate(image_path_list, tmp_data_save_path)
 
@@ -487,6 +492,8 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         FT_path_list = []
 
         phbar = tqdm(mrcs_names_list_process, desc='data preprocessing')
+        if isinstance(mrc_dir,list):
+            mrc_dir=mrc_dir[0]
         func = partial(raw_data_preprocess_one_mrcs, mrc_dir=mrc_dir, raw_dataset_save_dir=raw_dataset_save_dir,
                        FT_dataset_save_dir=FT_dataset_save_dir,
                        processed_dataset_save_dir=processed_dataset_save_dir, resize=resize, is_to_int8=is_to_int8,
