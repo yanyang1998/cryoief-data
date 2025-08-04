@@ -241,7 +241,7 @@ def window_mask(resolution, in_rad, out_rad=.99):
     return mask
 
 
-def raw_csdata_process_from_cryosparc_dir(raw_data_path):
+def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
     if raw_data_path.endswith('cs'):
         raw_data_path = os.path.dirname(raw_data_path)
     new_csdata_path = os.path.join(raw_data_path, 'new_particles.cs')
@@ -274,21 +274,25 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path):
             particles_cs_path = os.path.join(raw_data_path, filename)
         if filename.endswith('.cs'):
             other_cs_path = os.path.join(raw_data_path, filename)
-    if not os.path.exists(new_csdata_path):
-        if passthrough_particles_path is not None:
-            cs_data = combine_cs_files_column(particles_cs_path, passthrough_particles_path)
-        elif particles_cs_path is not None:
-            cs_data = Dataset.load(particles_cs_path)
 
-        elif other_cs_path is not None:
-            cs_data = Dataset.load(other_cs_path)
-
-        else:
-            Exception(raw_data_path + ': corresponding  not exists!')
-
-        cs_data.save(new_csdata_path)
-    else:
+    if processed_cs_path is not None and os.path.exists(processed_cs_path):
         cs_data = Dataset.load(new_csdata_path)
+    else:
+        if not os.path.exists(new_csdata_path):
+            if passthrough_particles_path is not None:
+                cs_data = combine_cs_files_column(particles_cs_path, passthrough_particles_path)
+            elif particles_cs_path is not None:
+                cs_data = Dataset.load(particles_cs_path)
+
+            elif other_cs_path is not None:
+                cs_data = Dataset.load(other_cs_path)
+
+            else:
+                Exception(raw_data_path + ': corresponding  not exists!')
+
+            cs_data.save(new_csdata_path)
+        else:
+            cs_data = Dataset.load(new_csdata_path)
 
     if os.path.exists(os.path.join(raw_data_path, 'restack')):
         mrc_dir = os.path.join(raw_data_path, 'restack')
@@ -308,7 +312,46 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path):
         # mrc_dir = raw_dir+'/'+'/'.join(cs_data['blob/path'][0].split('/')[0:-1])+'/'
     return cs_data, mrc_dir
 
+def sort_csdata(cs_data,save_path):
+    blob_path_list = cs_data['blob/path'].tolist()
+    mrcs_names_list = [blob_path_list[i].split('/')[-1] for i in
+                       range(len(blob_path_list))]
+    # mrc_dir= os.path.dirname(mrc_list)
+    mrcs_names_list_process = list(dict.fromkeys(mrcs_names_list))
+    # mrcs_names_list=mrc_list
 
+    print("Processing cs_data...")
+    mrcs_names_np = np.array(mrcs_names_list)
+    # Create a dictionary where the keys are names and the values are lists of indices
+    blob_idx_np = _np = np.array(cs_data['blob/idx'].tolist())
+    sorted_indices = np.argsort(mrcs_names_np)
+    sorted_names = mrcs_names_np[sorted_indices]
+    unique_names, counts = np.unique(sorted_names, return_counts=True)
+    split_indices = np.split(sorted_indices, np.cumsum(counts)[:-1])
+    indices_dict = dict(zip(unique_names, split_indices))
+    indeices_per_mrcs_dict = {}
+
+    for name, indices in indices_dict.items():
+        # Convert indices to numpy array
+        indices_np = np.array(indices)
+
+        # Get corresponding values in blob_idx_np
+        values = blob_idx_np[indices_np]
+
+        # Get the sorted indices based on the values
+        sorted_indices = np.argsort(values)
+
+        # Update indices in indices_dict in-place
+        indices_dict[name] = indices_np[sorted_indices]
+        indeices_per_mrcs_dict[name] = np.sort(values)
+    func_append_data = partial(append_data, cs_data=cs_data, indices_dict=indices_dict)
+    with multiprocessing.Pool(processes=12) as pool:
+        results = pool.map(func_append_data, mrcs_names_list_process)
+    new_cs_data = Dataset.append(results[0], *results[1:])
+
+    # new_csdata_path = os.path.join(dataset_save_dir, 'new_particles.cs')
+    new_cs_data.save(save_path)
+    return new_cs_data,mrcs_names_list_process,indices_dict
 def combine_cs_files_column(cs_path1, cs_path2):
     cs_data1 = Dataset.load(cs_path1)
     cs_data2 = Dataset.load(cs_path2)
@@ -399,46 +442,49 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
     cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(raw_dataset_dir)
 
     if cs_data is not None:
-        blob_path_list = cs_data['blob/path'].tolist()
-        mrcs_names_list = [blob_path_list[i].split('/')[-1] for i in
-                           range(len(blob_path_list))]
-        # mrc_dir= os.path.dirname(mrc_list)
-        mrcs_names_list_process = list(dict.fromkeys(mrcs_names_list))
-        # mrcs_names_list=mrc_list
-
-        print("Processing cs_data...")
-        mrcs_names_np = np.array(mrcs_names_list)
-        # Create a dictionary where the keys are names and the values are lists of indices
-        blob_idx_np = _np = np.array(cs_data['blob/idx'].tolist())
-        sorted_indices = np.argsort(mrcs_names_np)
-        sorted_names = mrcs_names_np[sorted_indices]
-        unique_names, counts = np.unique(sorted_names, return_counts=True)
-        split_indices = np.split(sorted_indices, np.cumsum(counts)[:-1])
-        indices_dict = dict(zip(unique_names, split_indices))
-        indeices_per_mrcs_dict = {}
-
-        for name, indices in indices_dict.items():
-            # Convert indices to numpy array
-            indices_np = np.array(indices)
-
-            # Get corresponding values in blob_idx_np
-            values = blob_idx_np[indices_np]
-
-            # Get the sorted indices based on the values
-            sorted_indices = np.argsort(values)
-
-            # Update indices in indices_dict in-place
-            indices_dict[name] = indices_np[sorted_indices]
-            indeices_per_mrcs_dict[name] = np.sort(values)
+        # blob_path_list = cs_data['blob/path'].tolist()
+        # mrcs_names_list = [blob_path_list[i].split('/')[-1] for i in
+        #                    range(len(blob_path_list))]
+        # # mrc_dir= os.path.dirname(mrc_list)
+        # mrcs_names_list_process = list(dict.fromkeys(mrcs_names_list))
+        # # mrcs_names_list=mrc_list
+        #
+        # print("Processing cs_data...")
+        # mrcs_names_np = np.array(mrcs_names_list)
+        # # Create a dictionary where the keys are names and the values are lists of indices
+        # blob_idx_np = _np = np.array(cs_data['blob/idx'].tolist())
+        # sorted_indices = np.argsort(mrcs_names_np)
+        # sorted_names = mrcs_names_np[sorted_indices]
+        # unique_names, counts = np.unique(sorted_names, return_counts=True)
+        # split_indices = np.split(sorted_indices, np.cumsum(counts)[:-1])
+        # indices_dict = dict(zip(unique_names, split_indices))
+        # indeices_per_mrcs_dict = {}
+        #
+        # for name, indices in indices_dict.items():
+        #     # Convert indices to numpy array
+        #     indices_np = np.array(indices)
+        #
+        #     # Get corresponding values in blob_idx_np
+        #     values = blob_idx_np[indices_np]
+        #
+        #     # Get the sorted indices based on the values
+        #     sorted_indices = np.argsort(values)
+        #
+        #     # Update indices in indices_dict in-place
+        #     indices_dict[name] = indices_np[sorted_indices]
+        #     indeices_per_mrcs_dict[name] = np.sort(values)
+        # if isinstance(mrc_dir,list):
+        #     mrc_dir=[mrc_dir[indices_dict[n][0]] for n in mrcs_names_list_process]
+        # func_append_data = partial(append_data, cs_data=cs_data, indices_dict=indices_dict)
+        # with multiprocessing.Pool(processes=12) as pool:
+        #     results = pool.map(func_append_data, mrcs_names_list_process)
+        # new_cs_data = Dataset.append(results[0], *results[1:])
+        #
+        # new_csdata_path = os.path.join(dataset_save_dir, 'new_particles.cs')
+        # new_cs_data.save(new_csdata_path)
+        new_cs_data, mrcs_names_list_process, indices_dict=sort_csdata(cs_data, os.path.join(dataset_save_dir, 'new_particles.cs'))
         if isinstance(mrc_dir,list):
             mrc_dir=[mrc_dir[indices_dict[n][0]] for n in mrcs_names_list_process]
-        func_append_data = partial(append_data, cs_data=cs_data, indices_dict=indices_dict)
-        with multiprocessing.Pool(processes=12) as pool:
-            results = pool.map(func_append_data, mrcs_names_list_process)
-        new_cs_data = Dataset.append(results[0], *results[1:])
-
-        new_csdata_path = os.path.join(dataset_save_dir, 'new_particles.cs')
-        new_cs_data.save(new_csdata_path)
     else:
         indeices_per_mrcs_dict = None
         # mrcs_names_list_process=mrc_list
