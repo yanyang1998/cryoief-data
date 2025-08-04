@@ -430,9 +430,10 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
             # Update indices in indices_dict in-place
             indices_dict[name] = indices_np[sorted_indices]
             indeices_per_mrcs_dict[name] = np.sort(values)
-
+        if isinstance(mrc_dir,list):
+            mrc_dir=[mrc_dir[indices_dict[n][0]] for n in mrcs_names_list_process]
         func_append_data = partial(append_data, cs_data=cs_data, indices_dict=indices_dict)
-        with multiprocessing.Pool(processes=8) as pool:
+        with multiprocessing.Pool(processes=12) as pool:
             results = pool.map(func_append_data, mrcs_names_list_process)
         new_cs_data = Dataset.append(results[0], *results[1:])
 
