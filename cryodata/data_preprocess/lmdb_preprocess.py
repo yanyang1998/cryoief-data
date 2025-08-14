@@ -230,17 +230,21 @@ def lmdb_process_item(args):
             if window:
                 win_mask = window_mask(np_image_raw_processed.shape[-1], window_r, .99)
                 np_image_raw_processed *= win_mask
-            if raw_resize is not None and raw_resize != np_image_raw_processed.shape[1]:
+            # if raw_resize is not None and raw_resize != np_image_raw_processed.shape[1]:
+            if raw_resize is not None and raw_resize < np_image_raw_processed.shape[1]:
                 np_image_raw_processed = mrcs_resize(np_image_raw_processed, raw_resize, raw_resize)
             np_image_raw_processed = np_image_raw_processed.astype(np.float32)
 
         np_image_FT = None
         if generate_ft_data:
-            ft_input_stack = np.copy(np_image_raw)  # 从原始数据副本开始
-            if window:
-                ft_input_stack *= window_mask(ft_input_stack.shape[-1], window_r, .99)
-            if raw_resize is not None:
-                ft_input_stack = mrcs_resize(ft_input_stack, raw_resize, raw_resize)
+            if np_image_raw_processed is None:
+                ft_input_stack = np.copy(np_image_raw)  # 从原始数据副本开始
+                if window:
+                    ft_input_stack *= window_mask(ft_input_stack.shape[-1], window_r, .99)
+                if raw_resize is not None and raw_resize < ft_input_stack.shape[1]:
+                    ft_input_stack = mrcs_resize(ft_input_stack, raw_resize, raw_resize)
+            else:
+                ft_input_stack = np.copy(np_image_raw_processed)
 
             particles = [fft.ht2_center(img) for img in ft_input_stack]
             np_image_FT = np.asarray(particles, dtype=np.float32)
