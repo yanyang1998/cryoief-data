@@ -365,7 +365,7 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
 
     if dataset_scores is not None and scores_bar > 0 and max(dataset_scores) != min(dataset_scores):
         index_list_good = np.array(index_list)[np.array(dataset_scores) >= scores_bar].tolist()
-        index_list_bad = np.array(index_list)[np.array(dataset_scores) < scores_bar].tolist()
+        index_list_bad = np.array(index_list)[np.array(dataset_scores) < scores_bar and np.array(dataset_scores) >=0].tolist()
         index_list = index_list_good
 
     else:
@@ -584,7 +584,7 @@ def balance_from_scores_interval(interval_num, scores, ids, num_min_per_interval
     for i in range(interval_num):
         lower_bound = min_score + i * interval_size
         upper_bound = min_score + (i + 1) * interval_size
-        mask = (scores_np >= lower_bound) & (scores_np < upper_bound)
+        mask = (scores_np >= lower_bound) & (scores_np < upper_bound) & (scores_np >=0)
         interval_ids = ids_np[mask].tolist()
         intervals[i] = interval_ids
         if len(interval_ids) < min_interval_len:
