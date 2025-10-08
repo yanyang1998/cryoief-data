@@ -569,7 +569,7 @@ def balance_from_scores_interval(interval_num, scores, ids, num_min_per_interval
     if len(scores) == 0:
         return [], []
 
-    min_score = min(scores)
+    min_score = max(min(scores),0)
     max_score = max(scores)
     if min_score == max_score:
         return ids, scores  # No variation in scores, return original lists
