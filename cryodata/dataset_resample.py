@@ -75,12 +75,12 @@ class MyResampleSampler(Sampler):
 class MyResampleSampler_pretrain(Sampler):
     def __init__(self, id_index_dict, batch_size_all, max_number_per_sample=None, shuffle_type=None,
                  shuffle_mix_up_ratio=0.2, dataset_id_map=None, bad_particles_ratio=0.1, combine_same_class=False,
-                 only_mixup_bad_particles=False, id_scores_dict=None, scores_bar=0.8,):
+                 only_mixup_bad_particles=False, id_scores_dict=None, scores_bar=0.8, ):
         # if isinstance(shuffle_type, int):
         #     shuffle_type=int(shuffle_type/2)
 
-        if shuffle_type=='batch':
-            shuffle_type=1
+        if shuffle_type == 'batch':
+            shuffle_type = 1
         self.id_index_dict = id_index_dict
         self.batch_size_all = batch_size_all
         self.max_number_per_sample = max_number_per_sample
@@ -93,7 +93,7 @@ class MyResampleSampler_pretrain(Sampler):
         self.only_mixup_bad_particles = only_mixup_bad_particles
         self.id_scores_dict = id_scores_dict
         self.scores_bar = scores_bar
-        indices = resample_from_id_index_dict(id_index_dict, max_number_per_sample, int(batch_size_all*1.2),
+        indices = resample_from_id_index_dict(id_index_dict, max_number_per_sample, int(batch_size_all * 1.2),
                                               int(shuffle_type / 2) if isinstance(shuffle_type, int) else shuffle_type,
                                               shuffle_mix_up_ratio, self.my_seed, dataset_id_map,
                                               bad_particles_ratio=bad_particles_ratio,
@@ -102,7 +102,7 @@ class MyResampleSampler_pretrain(Sampler):
                                               id_scores_dict=id_scores_dict,
                                               scores_bar=scores_bar
                                               )
-        if isinstance(self.shuffle_type, int) :
+        if isinstance(self.shuffle_type, int):
             combined_resampled_index_list = [
                 random.sample(indices[i], int(self.batch_size_all / self.shuffle_type)) if int(
                     self.batch_size_all / self.shuffle_type) <= len(indices[i]) else [] for i in
@@ -113,7 +113,8 @@ class MyResampleSampler_pretrain(Sampler):
 
     # @profile(precision=4)
     def __iter__(self):
-        indices = resample_from_id_index_dict(self.id_index_dict, self.max_number_per_sample, int(1.2*self.batch_size_all),
+        indices = resample_from_id_index_dict(self.id_index_dict, self.max_number_per_sample,
+                                              int(1.2 * self.batch_size_all),
                                               int(self.shuffle_type / 2) if isinstance(self.shuffle_type,
                                                                                        int) else self.shuffle_type,
                                               self.shuffle_mix_up_ratio, self.my_seed,
@@ -297,7 +298,7 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
 
         for i in range(len(resampled_index_list)):
             # step=batch_size_all-len(resampled_index_list[i])
-            if len(mix_up_list)>=step:
+            if len(mix_up_list) >= step:
                 resampled_index_list[i].extend(mix_up_list[:step])
             random.shuffle(resampled_index_list[i])
             new_resampled_index_list_i = []
@@ -352,7 +353,8 @@ def resample_from_id_index_dict_old(id_index_dict, max_number_per_sample, bad_pa
     return resampled_index_list
 
 
-def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=None, shuffle_mix_up_ratio=0.2,bad_particles_ratio=0.2,
+def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=None, shuffle_mix_up_ratio=0.2,
+                        bad_particles_ratio=0.2,
                         is_bad_class=False, error_distribution=None, dataset_scores=None, scores_bar=0.8,
                         balance_per_interval=False, interval_list=[0.3]):
     # index_list = id_index_dict[my_id]
@@ -365,18 +367,24 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
 
     if dataset_scores is not None and scores_bar > 0 and max(dataset_scores) != min(dataset_scores):
         index_list_good = np.array(index_list)[np.array(dataset_scores) >= scores_bar].tolist()
-        index_list_bad = np.array(index_list)[np.array(dataset_scores) < scores_bar and np.array(dataset_scores) >=0].tolist()
+        # index_list_bad = np.array(index_list)[
+        #     np.array(dataset_scores) < scores_bar and np.array(dataset_scores) >= 0].tolist()
+        scores_arr = np.array(dataset_scores)
+        index_list_bad = np.array(index_list)[(scores_arr < scores_bar) & (scores_arr >= 0)].tolist()
         index_list = index_list_good
 
     else:
+        if dataset_scores is not None:
+            index_list = np.array(index_list)[np.array(dataset_scores) >= 0].tolist()
         index_list_bad = None
 
-    if bad_particles_ratio>0 and index_list_bad is not None and len(index_list_bad) > 0:
+    if bad_particles_ratio > 0 and index_list_bad is not None and len(index_list_bad) > 0:
         if len(index_list_bad) > int(len(index_list) * bad_particles_ratio):
-            num_bad_resample= int(len(index_list) * bad_particles_ratio)
+            num_bad_resample = int(len(index_list) * bad_particles_ratio)
         else:
             num_bad_resample = len(index_list_bad)
-        index_list=random.sample(index_list, int(len(index_list) * (1-bad_particles_ratio))) + random.sample(index_list_bad, num_bad_resample)
+        index_list = random.sample(index_list, int(len(index_list) * (1 - bad_particles_ratio))) + random.sample(
+            index_list_bad, num_bad_resample)
         random.shuffle(index_list)
 
     len_index_list = len(index_list)
@@ -403,7 +411,7 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
             #                               :max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio)]
             else:
                 new_selected_index_list = selected_index_list[
-                                          :max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio)]
+                    :max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio)]
                 mix_up_list_added = (
                     selected_index_list[max_number_per_sample - int(len(selected_index_list) * shuffle_mix_up_ratio):])
         else:
@@ -494,7 +502,9 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                                                  per_batch_num=per_batch_num
                                                                  )
             combined_resampled_index_list = [
-                resampled_index_list_P[i] + resampled_index_list_N[i] + resampled_index_list_M[i] for i in
+                (resampled_index_list_P[i] if len(resampled_index_list_P) > i else []) + (resampled_index_list_N[i] if len(
+                    resampled_index_list_N) > i else []) + (resampled_index_list_M[i] if len(
+                    resampled_index_list_M) > i else []) for i in
                 range(len(resampled_index_list_P))]
             # combined_resampled_index_list = [
             #     random.sample(combined_resampled_index_list[i], int(batch_size_all / per_batch_num)) if int(
@@ -506,11 +516,11 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
             #                                  range(len(resampled_index_list_P))]
 
             combined_resampled_index_list = [
-                resampled_index_list_P[i] + resampled_index_list_N[i] for i in
+                (resampled_index_list_P[i] if len(resampled_index_list_P)>i else []) + (resampled_index_list_N[i] if len(resampled_index_list_N)>i else []) for i in
                 range(len(resampled_index_list_P))]
         combined_resampled_index_list = [
             random.sample(combined_resampled_index_list[i], int(batch_size_all / per_batch_num)) if int(
-                batch_size_all / per_batch_num) < len(combined_resampled_index_list[i]) else [] for i in
+                batch_size_all / per_batch_num) <= len(combined_resampled_index_list[i]) else [] for i in
             range(len(resampled_index_list_P))]
         random.shuffle(combined_resampled_index_list)
         resampled_index_list = [item for sublist in combined_resampled_index_list for item in sublist]
@@ -569,7 +579,7 @@ def balance_from_scores_interval(interval_num, scores, ids, num_min_per_interval
     if len(scores) == 0:
         return [], []
 
-    min_score = max(min(scores),0)
+    min_score = min(scores)
     max_score = max(scores)
     if min_score == max_score:
         return ids, scores  # No variation in scores, return original lists
@@ -584,7 +594,7 @@ def balance_from_scores_interval(interval_num, scores, ids, num_min_per_interval
     for i in range(interval_num):
         lower_bound = min_score + i * interval_size
         upper_bound = min_score + (i + 1) * interval_size
-        mask = (scores_np >= lower_bound) & (scores_np < upper_bound) & (scores_np >=0)
+        mask = (scores_np >= lower_bound) & (scores_np < upper_bound) & (scores_np >= 0)
         interval_ids = ids_np[mask].tolist()
         intervals[i] = interval_ids
         if len(interval_ids) < min_interval_len:

@@ -11,7 +11,6 @@ from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask,raw_csdata_pr
 from . import fft,mrc
 # from . import mrc
 import gc
-import mrcfile
 
 
 def create_lmdb_dataset(image_path_list, save_data_path,  map_size,

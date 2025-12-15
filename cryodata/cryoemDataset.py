@@ -266,8 +266,6 @@ class CryoMetaData(MyEmFile):
             if len(pose_id_map2) > 0:
                 self.pose_id_map2 = pose_id_map2
 
-
-
         # with open(data_path + '/labels_for_training.data',
         #           'rb') as filehandle:
         #     self.labels_for_training = pickle.load(filehandle)
@@ -414,7 +412,9 @@ class CryoMetaData(MyEmFile):
             else:
                 protein_index = np.where(protein_id_list_np == id)[0]
                 pos_index = protein_index[labels_classification_np[protein_index] >= middle_range_balance_train[1]]
-                neg_index = protein_index[labels_classification_np[protein_index] < middle_range_balance_train[0]]
+                # Discard data with a score less than 0
+                neg_index = protein_index[(labels_classification_np[protein_index] < middle_range_balance_train[0]) & (
+                            labels_classification_np[protein_index] >= 0)]
                 # if data_error_dis_dict is not None:
                 #     pos_dis = data_error_dis_dict[id][
                 #         labels_classification_np[protein_index] >= middle_range_balance_train[1]]
@@ -491,12 +491,13 @@ class CryoMetaData(MyEmFile):
             resample_num_p, resample_num_n, resample_num_m)
 
     def preprocess_trainset_index_pretrain(self, protein_id_dict=None, protein_id_list=None, id_map_for_filtering=None,
-                                           score_bar=None,is_filtering=True):
+                                           score_bar=None, is_filtering=True):
         if id_map_for_filtering is not None:
             self.pose_id_map2 = id_map_for_filtering
 
         if score_bar is not None and self.pose_id_map2 is not None and self.labels_classification is not None:
-            filtered_id_all=[key for key, value in self.pose_id_map2.items() if self.labels_classification[key] > score_bar]
+            filtered_id_all = [key for key, value in self.pose_id_map2.items() if
+                               self.labels_classification[key] > score_bar]
             self.pose_id_map2 = {key: i for i, key in enumerate(filtered_id_all)}
             # self.pose_id_map2 = {
             #     key: value
@@ -504,7 +505,8 @@ class CryoMetaData(MyEmFile):
             #     if self.labels_classification[key] > score_bar
             # }
 
-        self.labels_class=[self.protein_id_list[i] for i in self.pose_id_map2.keys()] if (self.pose_id_map2 is not None and is_filtering) else self.protein_id_list
+        self.labels_class = [self.protein_id_list[i] for i in self.pose_id_map2.keys()] if (
+                    self.pose_id_map2 is not None and is_filtering) else self.protein_id_list
         # aaa=[i for i in self.labels_classification if i >score_bar]
         if protein_id_dict is not None and protein_id_list is not None:
             target_protein_id_dict = protein_id_dict
@@ -578,7 +580,7 @@ class CryoEMDataset(Dataset):
             #     [os.path.join(lmdb_dir, name) for name in lmdb_dir_name_list if
             #      os.path.isdir(os.path.join(lmdb_dir, name))])
             self.lmdb_paths = [os.path.join(lmdb_dir, name) for name in lmdb_dir_name_list if
-                 os.path.isdir(os.path.join(lmdb_dir, name))]
+                               os.path.isdir(os.path.join(lmdb_dir, name))]
             if not self.lmdb_paths:
                 raise ValueError(f"No LMDB directories found in {lmdb_dir}")
 
@@ -610,7 +612,7 @@ class CryoEMDataset(Dataset):
             # self.open_envs = {}  # 用于缓存已打开的LMDB环境
             self.worker_id = None  # 用于多进程DataLoader
             self.env_processed = {}
-            self.env_raw= {}
+            self.env_raw = {}
             self.env_FT = {}
 
         # if mrcdata.lmdb_path is not None:
@@ -678,8 +680,6 @@ class CryoEMDataset(Dataset):
             self.tif_path_list_slice = None
 
         self.pose_id_map = metadata.pose_id_map
-
-
 
     def __len__(self):
         return self.tif_len
