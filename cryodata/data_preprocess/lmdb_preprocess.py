@@ -7,13 +7,13 @@ from PIL import Image
 # from io import BytesIO
 from tqdm import tqdm
 # import torch
-from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask,raw_csdata_process_from_cryosparc_dir
-from . import fft,mrc
+from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask, raw_csdata_process_from_cryosparc_dir
+from . import fft, mrc
 # from . import mrc
 import gc
 
 
-def create_lmdb_dataset(image_path_list, save_data_path,  map_size,
+def create_lmdb_dataset(image_path_list, save_data_path, map_size,
                         # MODIFIED: 新增开关
                         split_by_protein=True,
                         num_processes=None, chunksize=1, resize=224, raw_resize=None, is_to_int8=True,
@@ -135,7 +135,8 @@ def create_lmdb_dataset(image_path_list, save_data_path,  map_size,
 
     mean_std_id_dict = {}
     for protein_name, stats_list in mean_std_states_sum.items():
-        mrcs_sum={'FT':{'sum': 0.0, 'sq_sum': 0.0, 'count': 0},'processed':{'sum': 0.0, 'sq_sum': 0.0, 'count': 0},'raw':{'sum': 0.0, 'sq_sum': 0.0, 'count': 0}}
+        mrcs_sum = {'FT': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0}, 'processed': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0},
+                    'raw': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0}}
 
         for mrcs_sates in stats_list:
             for key in mrcs_sum.keys():
@@ -299,8 +300,9 @@ def lmdb_process_item(args):
         gc.collect()
         return (idx, [], {}, None)
 
-def process_one_dataset_paths(dir_one_dataset,num_resample_per_dataset=40000):
-    mrc_dir_list, mrcs_names_list_process ,num_resample_mrcs_per_dataset= [], [],[]
+
+def process_one_dataset_paths(dir_one_dataset, num_resample_per_dataset=40000):
+    mrc_dir_list, mrcs_names_list_process, num_resample_mrcs_per_dataset = [], [], []
     if os.path.isdir(dir_one_dataset):
         try:
             mrc_dir, mrcs_names_list_temp = get_mrcs_names_list_cs(dir_one_dataset)
@@ -311,7 +313,8 @@ def process_one_dataset_paths(dir_one_dataset,num_resample_per_dataset=40000):
                     [int(num_resample_per_dataset / len(mrcs_names_list_temp))] * len(mrcs_names_list_temp))
         except Exception as e:
             print(f"Could not process directory {dir_one_dataset}: {e}")
-    return mrc_dir_list, mrcs_names_list_process ,num_resample_mrcs_per_dataset
+    return mrc_dir_list, mrcs_names_list_process, num_resample_mrcs_per_dataset
+
 
 def get_mrcs_names_list_cs(mrcfile_path):
     cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(mrcfile_path)
