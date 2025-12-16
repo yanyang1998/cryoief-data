@@ -19,7 +19,7 @@ URL = 'https://github.com/yanyang1998/cryoief-data'
 EMAIL = 'y.yan98@outlook.com'
 AUTHOR = 'Yang Yan'
 REQUIRES_PYTHON = '>=3.9.0'
-VERSION = '0.1.1b03'
+VERSION = '0.1.1b04'
 
 # What packages are required for this module to be executed?
 REQUIRED = ['accelerate>=1.0.0',
@@ -37,7 +37,7 @@ REQUIRED = ['accelerate>=1.0.0',
                      'Pillow>=11.2.0',
                      'pyFFTW>=0.13.0',
                      'scikit_learn>=1.4.0',
-                     'scipy>=1.15.0',
+                     'scipy>=1.13.0',
                      'seaborn>=0.13.0',
                      'setuptools>=69.5.0',
                      'torch>=2.3.0',
