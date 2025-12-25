@@ -289,8 +289,9 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
 
             else:
                 Exception(raw_data_path + ': corresponding  not exists!')
-
-            cs_data.save(new_csdata_path)
+                cs_data = None
+            if cs_data is not None:
+                cs_data.save(new_csdata_path)
         else:
             cs_data = Dataset.load(new_csdata_path)
 
