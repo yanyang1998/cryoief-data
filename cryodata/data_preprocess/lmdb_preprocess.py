@@ -249,6 +249,8 @@ def lmdb_process_item(args):
             particles = [fft.ht2_center(img) for img in ft_input_stack]
             np_image_FT = np.asarray(particles, dtype=np.float32)
             np_image_FT = fft.symmetrize_ht(np_image_FT)
+            if np_image_FT.ndim == 2:
+                np_image_FT = np.expand_dims(np_image_FT, axis=0)
             np_image_FT = np_image_FT.astype(np.float32)
             del ft_input_stack
 

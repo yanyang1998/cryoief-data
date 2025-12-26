@@ -43,6 +43,9 @@ def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000
             particles = [fft.ht2_center(np_image_raw_sampled[i]) for i in range(np_image_raw_sampled.shape[0])]
             np_image_FT_sampled = np.asarray(particles, dtype=np.float32)
             np_image_FT_sampled = fft.symmetrize_ht(np_image_FT_sampled)
+            if np_image_FT_sampled.ndim==2:
+                np_image_FT_sampled=np.expand_dims(np_image_FT_sampled,axis=0)
+
             np_image_FT_all.append(np_image_FT_sampled)
         # np_image_raw_sampled = np.asarray(imgs, dtype=np.float32)
 
@@ -400,6 +403,8 @@ def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_
 
         FT_mrcs = np.asarray(particles, dtype=np.float32)
         FT_mrcs = fft.symmetrize_ht(FT_mrcs)
+        if FT_mrcs.ndim == 2:
+            FT_mrcs = np.expand_dims(FT_mrcs, axis=0)
 
     for j in ids_list:
 
