@@ -14,6 +14,10 @@ from io import BytesIO
 import json
 import lmdb
 from annoy import AnnoyIndex
+import logging
+
+# Add a module-level logger
+logger = logging.getLogger(__name__)
 
 
 # import time
@@ -113,31 +117,39 @@ class CryoMetaData(MyEmFile):
         self.processed_data_path = processed_data_path
         self.id_index_dict = None
 
-
         assert processed_data_path is not None, "processed_data_path must be provided"
         self.load_preprocessed_data_path(data_path=processed_data_path,
                                          ctf_correction_averages=ctf_correction_averages,
                                          ctf_correction_train=ctf_correction_inference)
 
-        # if processed_data_path is not None:
-        #     # with open(os.path.join(processed_data_path, 'path_divided_by_labels.data'), 'rb') as filehandle:
-        #     #     self.path_divided_by_labels = pickle.load(filehandle)
-        #     # with open(os.path.join(processed_data_path, 'ids_divided_by_labels.data'), 'rb') as filehandle:
-        #     #     self.ids_divided_by_labels = pickle.load(filehandle)
-        #     self.load_preprocessed_data_path(data_path=processed_data_path,
-        #                                      ctf_correction_averages=ctf_correction_averages,
-        #                                      ctf_correction_train=ctf_correction_inference)
-        # else:
-        #     if is_extra_valset:
-        #         tmp_data_save_path = tmp_data_save_path + '/tmp/preprocessed_data/extra_valset/'
-        #     else:
-        #         tmp_data_save_path = tmp_data_save_path + '/tmp/preprocessed_data/trainset/'
-        #     self.mrc_path = mrc_path
-        #     if not os.path.exists(tmp_data_save_path + '/output_tif_path.data') and accelerator.is_local_main_process:
-        #         self.load_path()
-        #         self.divided_into_single_mrc(tmp_data_save_path, resize=cfg['resize'], crop_ratio=cfg['crop_ratio'])
-        #     accelerator.wait_for_everyone()
-        #     self.load_preprocessed_data_path(data_path=tmp_data_save_path)
+    # Safe pickle loader to avoid crashing on malformed files and to centralize error handling
+    def _safe_load_pickle(self, path):
+        try:
+            with open(path, 'rb') as fh:
+                return pickle.load(fh)
+        except Exception as e:
+            logger.warning(f"Failed to load pickle file {path}: {e}")
+            return None
+
+    def close(self):
+        """Close any open LMDB environments held by this metadata object."""
+        # If lmdb_env or cached envs are present on the object, try to close them
+        try:
+            if hasattr(self, 'lmdb_env') and self.lmdb_env is not None:
+                try:
+                    self.lmdb_env.close()
+                except Exception:
+                    pass
+                self.lmdb_env = None
+        except Exception:
+            pass
+
+    def __del__(self):
+        # Ensure resources are closed on garbage collection
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def load_path(self):
         mrcs_path_list = []
@@ -559,20 +571,24 @@ class CryoEMDataset(Dataset):
                  weight_for_contrastive_classification_label=0.0,
                  use_triplex_labels=False, bar_score=0.0,
                  in_chans=1, needs_aug2=False,
-                 pretrain_128=False
+                 pretrain_128=False,
+                 patch_size=14,
+                 mask_setting=None
                  ):
         self.pose_indices = AnnoyIndex(2, 'euclidean')
         self.tif_len = metadata.length
         self.lmdb_path = metadata.lmdb_path
         self.pretrain_128 = pretrain_128
 
+        self.patch_size = patch_size
+        self.mask_setting = mask_setting
+
         self.protein_id_list = metadata.protein_id_list
         self.protein_id_dict = metadata.protein_id_dict
         self.protein_id_dict_reverse = {v: k for k, v in self.protein_id_dict.items()}
 
-
         if self.lmdb_path is not None:
-            lmdb_dir_name_list=list(self.protein_id_dict.keys())
+            lmdb_dir_name_list = list(self.protein_id_dict.keys())
             lmdb_dir = self.lmdb_path
             # self.lmdb_dir = lmdb_dir
 
@@ -664,8 +680,10 @@ class CryoEMDataset(Dataset):
 
         if local_crops is not None:
             self.local_crops_number = local_crops['number']
+            self.local_crops_only_mics = local_crops.get('only_mics', False)
         else:
             self.local_crops_number = 0
+            self.local_crops_only_mics = False
 
         self.weight_for_contrastive_classification_label = weight_for_contrastive_classification_label
         if weight_for_contrastive_classification_label > 0:
@@ -698,18 +716,16 @@ class CryoEMDataset(Dataset):
 
     # @profile(precision=4)
     def __getitem__(self, item):
-        local_crops1 = []
-        local_crops2 = []
-        # end_git_item=time.time()
+        # local_crops1 = []  <-- 删除这两行，下面会通过函数生成
+        # local_crops2 = []
 
         '''get mrcdata1 and aug1'''
         mrcdata = self.get_mrcdata(item=item)
 
         weight = float(1.0)
-        # label_for_training=self.labels_for_training[item]
-        # gaussian_probabilities=self.probabilities_for_sampling[item]
 
         '''get labels data'''
+        # ... (这部分保持不变) ...
         if self.labels_for_clustering is not None and len(self.labels_for_clustering) > item:
             label_for_clustering = self.labels_for_clustering[item]
         else:
@@ -723,46 +739,104 @@ class CryoEMDataset(Dataset):
             else:
                 label_for_classification = 0.5
 
-        # particles_id = self.particles_id[item]
         protein_id = self.protein_id_list[item]
 
         '''get mrcdata2'''
-        if self.needs_aug2:
-            mrcdata2 = None
-            is_random_rotate_transform = True if self.random_rotate_transform is not None else False
-            item2, weight, is_mix_pos = self.get_item2(item)
-            if item2 is not None:
-                mrcdata2 = self.get_mrcdata(item=item2)
-            elif self.slice_setting is not None and random.random() < self.slice_setting['p']:
-                mrcdata2 = self.get_corr_slice(item)
-            if mrcdata2 is None:
-                mrcdata2 = mrcdata
-            # else:
-            #     is_random_rotate_transform = False
-            aug1 = self.mrcdata_aug(mrcdata, is_random_rotate_transform=is_random_rotate_transform,
-                                    is_mix_pos=is_mix_pos)
-            aug2 = self.mrcdata_aug(mrcdata2, is_random_rotate_transform=is_random_rotate_transform,
-                                    is_mix_pos=is_mix_pos)
-        else:
-            aug1 = self.mrcdata_aug(mrcdata)
-            aug2 = None
+        mrcdata_rotate1 = None  # 初始化
+        mrcdata_rotate2 = None  # 初始化
 
-        # img2tensor = transforms.ToTensor()
-        # mrcdata = img2tensor(mrcdata)
+        # Determine if this is micrographs data (mics) or particles data (ptcls)
+        is_mics = True if mrcdata.size[-1] > 384 else False
+
+        if self.needs_aug2:
+
+            is_random_rotate_transform =False
+            is_mix_pos=False
+
+            if is_mics:
+                if self.mic_crop is not None:
+                    mrcdata=self.mic_crop(mrcdata)
+                mrcdata2 = mrcdata
+            else:
+                if self.random_rotate_transform is not None:
+                    is_random_rotate_transform = True
+                item2, weight, is_mix_pos = self.get_item2(item)
+                if item2 is not None:
+                    mrcdata2 = self.get_mrcdata(item=item2)
+                elif self.slice_setting is not None and random.random() < self.slice_setting['p']:
+                    mrcdata2 = self.get_corr_slice(item)
+                else:
+                    mrcdata2 = mrcdata
+
+            # 修改点：接收返回的 rotate image
+            aug1, mrcdata_rotate1 = self.mrcdata_aug(mrcdata, is_random_rotate_transform=is_random_rotate_transform,
+                                                     is_mix_pos=is_mix_pos,
+                                                     is_mics=is_mics)
+            aug2, mrcdata_rotate2 = self.mrcdata_aug(mrcdata2,
+                                                     is_random_rotate_transform=is_random_rotate_transform,
+                                                     is_mix_pos=is_mix_pos,
+                                                     is_mics=is_mics)
+        else:
+            # 修改点：接收返回的 rotate image
+            aug1, mrcdata_rotate1 = self.mrcdata_aug(mrcdata)
+            aug2 = None
+            mrcdata_rotate2 = None
+
+        # === Generate Local Crops ===
+        # Only generate local crops if enabled and (not only_mics OR data is micrographs)
+        should_apply_local_crops = self.local_crops_number > 0 and (not self.local_crops_only_mics or is_mics)
+        if should_apply_local_crops:
+            local_crops1, local_crops2 = self.get_local_crops(mrcdata_rotate1, mrcdata_rotate2)
+        else:
+            local_crops1, local_crops2 = [], []
+        # ===============================
+
+        # Generate mask based on settings
+        # Always generate a mask when MIM is enabled to ensure consistent DDP behavior
+        # When only_mics=True and data is particles, generate an all-zero mask (no masking)
+        if self.mask_setting is not None and self.mask_setting['is_add_mim_loss']:
+            should_apply_masking = not self.mask_setting.get('only_mics', False) or is_mics
+            if should_apply_masking:
+                mask = self.get_mask(setting=self.mask_setting, W=aug1.shape[1] // self.patch_size,
+                                     H=aug1.shape[2] // self.patch_size)
+            else:
+                # Generate all-zero mask for particles when only_mics=True
+                # This ensures predictor_mim is always used consistently for DDP
+                mask = np.zeros((aug1.shape[1] // self.patch_size, aug1.shape[2] // self.patch_size), dtype=np.int16)
+        else:
+            mask = []
 
         out = {
-            # 'mrcdata': mrcdata,
-            'aug1': aug1, 'aug2': aug2 if aug2 is not None else [],
+            'aug1': aug1,
+            'aug2': aug2 if aug2 is not None else [],
             'weight': weight,
             'label_for_clustering': label_for_clustering,
             'label_for_classification': label_for_classification,
-            # 'path': tif_path,
-            # 'raw_path': raw_tif_path,
-            # 'particles_id': str(particles_id),
+            'mask': mask,
             'item': item,
-            'local_crops1': local_crops1,
-            'local_crops2': local_crops2, 'protein_id': protein_id}
+            'local_crops1': local_crops1,  # 现在这里有数据了
+            'local_crops2': local_crops2,
+            'protein_id': protein_id
+        }
         return out
+
+    def get_mask(self,setting,W,H):
+        mask = np.zeros(W*H, dtype=np.int16)
+
+        if random.random() < setting['p']:
+
+            mask_ratio=random.uniform(setting['mask_ratio'][0],setting['mask_ratio'][1] )
+            num_mask=int(W*H*mask_ratio)
+            mask_indices=random.sample(range(W*H),num_mask)
+            for idx in mask_indices:
+                mask[idx]=1
+        mask=mask.reshape(W,H)
+
+        return mask
+
+
+
+
 
     def get_item2(self, item):
         item2 = None
@@ -790,10 +864,10 @@ class CryoEMDataset(Dataset):
                     item2 = pose_items_id[item2_pose_id] + min_id
 
                     # if item-min(item_list)<0:
-                    #     print('item is less than min(item_list): ' + str(item) + ' ' + str(min(item_list)))
+                    #     print('item is less than min(item.list): ' + str(item) + ' ' + str(min(item_list)))
                     #     print('protein_name: ' + protein_name)
                     # if item2-min(item_list)<0:
-                    #     print('item2 is less than min(item_list): ' + str(item2) + ' ' + str(min(item_list)))
+                    #     print('item2 is less than min(item.list): ' + str(item2) + ' ' + str(min(item_list)))
                     #     print('protein_name: ' + protein_name)
                     weight = sigmoid(self.mix_pos_setting['sigma'] * (
                             (3.5 - self.pose_indices.get_distance(item1_pose_id, item2_pose_id)) / 3.5
@@ -814,7 +888,7 @@ class CryoEMDataset(Dataset):
 
         protein_id = self.protein_id_list[item]
         item_list = self.id_index_dict.get(protein_id, [])
-        min_id=self.cumulative_sizes[protein_id-1] if protein_id > 0 else 0
+        min_id = self.cumulative_sizes[protein_id - 1] if protein_id > 0 else 0
 
         # min_id = min(item_list)
         nearest = None
@@ -877,7 +951,7 @@ class CryoEMDataset(Dataset):
                 local_idx = index - prev_size
 
                 # 3. 获取（可能需要懒加载）对应的LMDB环境
-                lmdb_env_r, lmdb_env_p, _ = self._get_env(lmdb_path,use_raw=self.pretrain_128)
+                lmdb_env_r, lmdb_env_p, _ = self._get_env(lmdb_path, use_raw=self.pretrain_128)
                 if self.pretrain_128:
                     lmdb_env = lmdb_env_r
                 else:
@@ -907,54 +981,65 @@ class CryoEMDataset(Dataset):
                     print('error for path: ' + tif_path)
         return mrcdata
 
-    def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False):
-        if isinstance(mrcdata,np.ndarray) :
-            mrcdata =Image.fromarray(mrcdata)
+    def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False,is_mics=False):
+        if isinstance(mrcdata, np.ndarray):
+            mrcdata = Image.fromarray(mrcdata)
         # # if mrcdata.mode != 'L':
         #     mrcdata = to_int8(mrcdata)
-        if is_random_rotate_transform:
-            if is_mix_pos and self.random_rotate_transform_mix_pos is not None:
-                mrcdata_rotate1 = self.random_rotate_transform_mix_pos(mrcdata)
-            elif self.random_rotate_transform is not None:
-                mrcdata_rotate1 = self.random_rotate_transform(mrcdata)
+        mrcdata_rotate1 = mrcdata
+        if is_mics:
+            if self.mic_transform is not None:
+                aug = self.mic_transform(mrcdata)
+        else:
+
+            # 1. 处理旋转
+            if is_random_rotate_transform:
+                if is_mix_pos and self.random_rotate_transform_mix_pos is not None:
+                    mrcdata_rotate1 = self.random_rotate_transform_mix_pos(mrcdata)
+                elif self.random_rotate_transform is not None:
+                    mrcdata_rotate1 = self.random_rotate_transform(mrcdata)
+
+            # 2. 生成 Global View (aug)
+            if is_mix_pos:
+                aug = self.transform_mix_pos(mrcdata_rotate1)
             else:
-                mrcdata_rotate1 = mrcdata
-        else:
-            mrcdata_rotate1 = mrcdata
-        if is_mix_pos:
-            aug = self.transform_mix_pos(mrcdata_rotate1)
-        else:
-            aug = self.transform(mrcdata_rotate1)
-        return aug
+                aug = self.transform(mrcdata_rotate1)
+
+            # 修改点：同时返回 最终aug tensor 和 中间状态的 rotate image
+        return aug, mrcdata_rotate1
 
     def get_transforms(self, transforms, transforms_list_mix_pos=None):
-        self.transform = transforms[0]
-        self.local_crops_transform = transforms[1]
-        self.random_rotate_transform = transforms[2]
+        self.transform = transforms['ptcls'] if 'ptcls' in transforms else None
+        self.local_crops_transform = transforms['local_crops'] if 'local_crops' in transforms else None
+        self.random_rotate_transform = transforms['random_rotate'] if 'random_rotate' in transforms else None
+        self.mic_transform = transforms['mics'] if 'mics' in transforms else None
+        self.mic_crop= transforms['random_resized_crop_all'] if 'random_resized_crop_all' in transforms else None
         if transforms_list_mix_pos is not None:
             # self.mix_pos_transforms = transforms_list_mix_pos
-            self.random_rotate_transform_mix_pos = transforms_list_mix_pos[2]
-            self.transform_mix_pos = transforms_list_mix_pos[0]
+            self.random_rotate_transform_mix_pos = transforms['random_rotate'] if 'random_rotate' in transforms else None
+            self.transform_mix_pos = transforms['ptcls'] if 'ptcls' in transforms else None
         else:
             self.mix_pos_transforms = None
             self.random_rotate_transform_mix_pos = None
             self.transform_mix_pos = None
 
-    def get_local_crops(self, aug1, aug2, mrcdata_rotate1, mrcdata_rotate2):
+    def get_local_crops(self, mrcdata_rotate1, mrcdata_rotate2=None):
         local_crops1 = []
         local_crops2 = []
+
+        # 生成 crop
         for _ in range(self.local_crops_number):
             local_crops1.append(self.local_crops_transform(mrcdata_rotate1))
-            if self.needs_aug2:
+            if self.needs_aug2 and mrcdata_rotate2 is not None:
                 local_crops2.append(self.local_crops_transform(mrcdata_rotate2))
-        # imgs_all = [aug1, aug2] + local_crops1 + local_crops2
 
+        # 处理通道数 (如果输入不是单通道)
         if self.in_chans != 1:
-            aug1 = aug1.repeat(self.in_chans, 1, 1)
+            # 注意：这里只处理 local crops，aug1/aug2 的处理应在外部或 transform 中完成
             local_crops1 = [local_crop.repeat(self.in_chans, 1, 1) for local_crop in local_crops1]
-            if self.needs_aug2:
-                aug2 = aug2.repeat(self.in_chans, 1, 1)
+            if self.needs_aug2 and mrcdata_rotate2 is not None:
                 local_crops2 = [local_crop.repeat(self.in_chans, 1, 1) for local_crop in local_crops2]
+
         return local_crops1, local_crops2
 
     def _get_env(self, lmdb_path, use_raw=False, use_processed=True, use_FT=False):
