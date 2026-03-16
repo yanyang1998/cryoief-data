@@ -133,7 +133,8 @@ def parse_header(fname):
 
 
 def parse_mrc_list(txtfile, lazy=False):
-    lines = open(txtfile, 'r').readlines()
+    with open(txtfile, 'r') as f:
+        lines = f.readlines()
 
     def abspath(f):
         if os.path.isabs(f):
@@ -180,6 +181,6 @@ def write(fname, array, header=None, a_pix=1., xorg=0., yorg=0., zorg=0., is_vol
             is_vol = True if len(set(array.shape)) == 1 else False  # Guess whether data is vol or image stack
         header = MRCHeader.make_default_header(array, is_vol, a_pix, xorg, yorg, zorg)
     # write the header
-    f = open(fname, 'wb')
-    header.write(f)
-    f.write(array.tobytes())
+    with open(fname, 'wb') as f:
+        header.write(f)
+        f.write(array.tobytes())

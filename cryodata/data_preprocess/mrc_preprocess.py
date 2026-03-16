@@ -12,6 +12,9 @@ from . import mrc
 from . import fft
 from scipy.ndimage import zoom
 
+# Default worker count for multiprocessing pools
+DEFAULT_WORKER_PROCESSES = 12
+
 def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000, window=False, window_r=0.85,needs_FT=False):
     if num_stacks > len(path_list):
         num_stacks = len(path_list)
@@ -120,21 +123,6 @@ def sample_and_calculate_mean_std(path_list, Cnum=1000, Ctimes=1, is_normalize=T
     return mean, std
 
 
-# def mrcs_resize(mrcs, width, height, is_norm=False):
-#     resized_mrcs = np.zeros((mrcs.shape[0], width, height))
-#     # pbar = tqdm(range(mrcs.shape[0]))
-#     # pbar.set_description("resize mrcs to width*height")
-#     for i in range(mrcs.shape[0]):
-#         mrc = mrcs[i]
-#         # if is_norm:
-#         #     mrc = (mrc - np.min(mrc)) * (30 / (np.max(mrc) - np.min(mrc)))
-#         #     mrc = mrc - np.mean(mrc)
-#         mrc = Image.fromarray(mrc)
-#         resized_mrcs[i] = np.asarray(mrc.resize((width, height), Image.BICUBIC))
-#     resized_mrcs = resized_mrcs.astype('float32')
-#     return resized_mrcs
-
-
 
 def mrcs_resize(mrcs, width, height=None, is_freqs=True):
     """
@@ -206,20 +194,6 @@ def mrcs_to_int8(mrcs):
     return new_mrcs
 
 
-# def to_int8(mrcdata):
-#     # mrcdata = np.array(mrcdata)
-#     # a=np.max(mrcdata)
-#     # b=np.min(mrcdata)
-#     if torch.is_tensor(mrcdata):
-#         mrcdata = mrcdata.cpu().numpy()
-#     if np.max(mrcdata) - np.min(mrcdata) != 0:
-#         mrcdata_processed = (mrcdata - np.min(mrcdata)) / ((np.max(mrcdata) - np.min(mrcdata)))
-#         mrcdata_processed = (mrcdata_processed * 255).astype(np.uint8)
-#     else:
-#         mrcdata_processed = mrcdata.astype(np.uint8)
-#
-#     return Image.fromarray(mrcdata_processed)
-# return mrcdata
 
 def to_int8(mrcdata):
     if torch.is_tensor(mrcdata):
@@ -349,7 +323,7 @@ def sort_csdata(cs_data,save_path):
         indices_dict[name] = indices_np[sorted_indices]
         indeices_per_mrcs_dict[name] = np.sort(values)
     func_append_data = partial(append_data, cs_data=cs_data, indices_dict=indices_dict)
-    with multiprocessing.Pool(processes=12) as pool:
+    with multiprocessing.Pool(processes=DEFAULT_WORKER_PROCESSES) as pool:
         results = pool.map(func_append_data, mrcs_names_list_process)
     new_cs_data = Dataset.append(results[0], *results[1:])
 
@@ -551,7 +525,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
                        FT_dataset_save_dir=FT_dataset_save_dir,
                        processed_dataset_save_dir=processed_dataset_save_dir, resize=resize, is_to_int8=is_to_int8,
                        indeices_per_mrcs_dict=indeices_per_mrcs_dict)
-        pool = multiprocessing.Pool(20)
+        pool = multiprocessing.Pool(DEFAULT_WORKER_PROCESSES)
         results = pool.map(func, phbar)
         pool.close()
         pool.join()

@@ -2,6 +2,12 @@ from torch.utils.data.sampler import Sampler
 import random
 import numpy as np
 
+# Batch size divisors for micrograph datasets (mics_*).
+# A smaller number for __init__ gives a larger starting batch size,
+# while the tighter value in __iter__ keeps per-step memory usage lower.
+MICS_BATCH_DIVISOR_INIT = 10
+MICS_BATCH_DIVISOR_ITER = 8
+
 
 class MyResampleSampler(Sampler):
     def __init__(self, data, id_index_dict_pos, id_index_dict_mid, id_index_dict_neg, resample_num_pos,
@@ -9,10 +15,12 @@ class MyResampleSampler(Sampler):
                  batch_size_all=None, shuffle_type=None, dataset_id_map=None, only_mixup_bad_particles=False,
                  error_balance=None, mean_error_dis_dict=None, data_error_dis_dict=None,
                  balance_per_interval=False,
-                 index_list=[0.3],
+                 index_list=None,
                  shuffle_mix_up_ratio=0.0,
                  ):
         self.data = data
+        if index_list is None:
+            index_list = [0.3]
         self.id_index_dict_pos = id_index_dict_pos
         self.id_index_dict_mid = id_index_dict_mid
         self.id_index_dict_neg = id_index_dict_neg
@@ -108,39 +116,47 @@ class MyResampleSampler_pretrain(Sampler):
                                               id_protein_name_dict=self.id_protein_name_dict
                                               )
         if isinstance(self.shuffle_type, int):
-            combined_resampled_index_list =[]
-            for i in  range(len(indices)):
-                batch_size_i= int(self.batch_size_all / (self.num_processes*self.shuffle_type))
-                batch_i=[]
-                if self.id_protein_name_dict is not None and i in self.id_protein_name_dict.keys() and self.id_protein_name_dict[i].startswith('mics_'):
-                    batch_size_i= int(batch_size_i/10)
-                if len(indices[i])<batch_size_i*self.num_processes and len(indices[i])>self.num_processes:
-                    batch_size_ii= int(len(indices[i])/self.num_processes)
-                    for j in range(0,len(indices[i]),batch_size_ii):
-                        batch=indices[i][j:j+batch_size_ii]
-                        batch_i.append(batch)
-                        if len(batch_i)==self.num_processes and isinstance(batch_i[0],list):
-                            combined_resampled_index_list.append(indices[i])
-                            batch_i=[]
-                else:
-                    for j in range(0,len(indices[i]),batch_size_i):
-                        batch=indices[i][j:j+batch_size_i]
-                        if len(batch)==batch_size_i:
-                            batch_i.append(batch)
-                        if len(batch_i)==self.num_processes and isinstance(batch_i[0],list):
-                            combined_resampled_index_list.append(batch_i)
-                            batch_i=[]
-            random.shuffle(combined_resampled_index_list)
-
-            combined_resampled_index_list=[item for sublist in combined_resampled_index_list for item in sublist if isinstance(sublist,list) and isinstance(item,list) and len(item)>0]
-            self.batch_num = len(combined_resampled_index_list)
-            indices = []
-            for batch in combined_resampled_index_list:
-                if isinstance(batch, list) and len(batch) > 0 and isinstance(batch[0], int):
-                    indices.extend(batch)
+            combined_resampled_index_list, indices = self._build_batched_index_list(
+                indices, MICS_BATCH_DIVISOR_INIT)
         self.indices = indices
 
     # @profile(precision=4)
+    def _build_batched_index_list(self, indices, mics_divisor):
+        """Combine per-class index lists into shuffled batches of size batch_size_all / num_processes."""
+        combined = []
+        for i in range(len(indices)):
+            batch_size_i = int(self.batch_size_all / (self.num_processes * self.shuffle_type))
+            batch_i = []
+            if (self.id_protein_name_dict is not None
+                    and i in self.id_protein_name_dict
+                    and self.id_protein_name_dict[i].startswith('mics_')):
+                batch_size_i = int(batch_size_i / mics_divisor)
+            if len(indices[i]) < batch_size_i * self.num_processes and len(indices[i]) > self.num_processes:
+                batch_size_ii = int(len(indices[i]) / self.num_processes)
+                for j in range(0, len(indices[i]), batch_size_ii):
+                    batch = indices[i][j:j + batch_size_ii]
+                    batch_i.append(batch)
+                    if len(batch_i) == self.num_processes and isinstance(batch_i[0], list):
+                        combined.append(indices[i])
+                        batch_i = []
+            else:
+                for j in range(0, len(indices[i]), batch_size_i):
+                    batch = indices[i][j:j + batch_size_i]
+                    if len(batch) == batch_size_i:
+                        batch_i.append(batch)
+                    if len(batch_i) == self.num_processes and isinstance(batch_i[0], list):
+                        combined.append(batch_i)
+                        batch_i = []
+        random.shuffle(combined)
+        combined = [item for sublist in combined
+                    for item in sublist
+                    if isinstance(sublist, list) and isinstance(item, list) and len(item) > 0]
+        self.batch_num = len(combined)
+        flat_indices = [idx for batch in combined
+                        if isinstance(batch, list) and len(batch) > 0 and isinstance(batch[0], int)
+                        for idx in batch]
+        return combined, flat_indices
+
     def __iter__(self):
         indices = resample_from_id_index_dict(self.id_index_dict, self.max_number_per_sample,
                                               int(1.2 * self.batch_size_all),
@@ -157,64 +173,13 @@ class MyResampleSampler_pretrain(Sampler):
         self.indices = indices
         self.my_seed += 1
         if isinstance(self.shuffle_type, int):
-
-
-
-            combined_resampled_index_list =[]
-            for i in  range(len(indices)):
-                batch_size_i= int(self.batch_size_all / (self.num_processes*self.shuffle_type))
-                batch_i=[]
-                if self.id_protein_name_dict is not None and self.id_protein_name_dict[i].startswith('mics_'):
-                    batch_size_i= int(batch_size_i/8)
-                if len(indices[i])<batch_size_i*self.num_processes and len(indices[i])>self.num_processes:
-                    batch_size_ii= int(len(indices[i])/self.num_processes)
-                    for j in range(0,len(indices[i]),batch_size_ii):
-                        batch=indices[i][j:j+batch_size_ii]
-                        batch_i.append(batch)
-                        if len(batch_i)==self.num_processes and isinstance(batch_i[0],list):
-                            combined_resampled_index_list.append(indices[i])
-                            batch_i=[]
-                else:
-                    for j in range(0,len(indices[i]),batch_size_i):
-                        batch=indices[i][j:j+batch_size_i]
-                        if len(batch)==batch_size_i:
-                            batch_i.append(batch)
-                        if len(batch_i)==self.num_processes and isinstance(batch_i[0],list):
-                            combined_resampled_index_list.append(batch_i)
-                            batch_i=[]
-            random.shuffle(combined_resampled_index_list)
-
-            # print('Total batches per epoch:',self.batch_num)
-            combined_resampled_index_list=[item for sublist in combined_resampled_index_list for item in sublist if isinstance(sublist,list) and isinstance(item,list) and len(item)>0]
-            self.batch_num = len(combined_resampled_index_list)
-            # print('Total batches per epoch:',len(combined_resampled_index_list))
-
-
-            # else:
-            #     combined_resampled_index_list = [
-            #         random.sample(indices[i], int(self.batch_size_all / self.shuffle_type)) if int(
-            #             self.batch_size_all / self.shuffle_type) <= len(indices[i]) else [] for i in
-            #         range(len(indices))]
-
-                # if len(indices[i]) >= int(self.batch_size_all / self.shuffle_type):
-                #     combined_resampled_index_list.append(
-                #         random.sample(indices[i], int(self.batch_size_all / self.shuffle_type)))
-
-                # random.shuffle(combined_resampled_index_list)
-            # when dimension of combined_resampled_index_list is 2
-            indices = []
-            for batch in combined_resampled_index_list:
-                if isinstance(batch,list) and len(batch)>0 and isinstance(batch[0],int):
-                    indices.extend(batch)
-
+            combined_resampled_index_list, indices = self._build_batched_index_list(
+                indices, MICS_BATCH_DIVISOR_ITER)
             self.indices = indices
 
             for batch in combined_resampled_index_list:
                 yield batch
 
-        # print(self.indices[0:80])
-
-        # print(sorted(self.indices))
         else:
             for idx in self.indices:
                 yield idx
@@ -251,11 +216,13 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                 mean_error_dis_dict=None, data_error_dis_dict=None,
                                 id_scores_dict=None, scores_bar=0.0,
                                 balance_per_interval=False,
-                                interval_list=[0.3],
+                                interval_list=None,
                                 per_batch_num=0,
                                 id_protein_name_dict=None
                                 ):
     random.seed(my_seed)
+    if interval_list is None:
+        interval_list = [0.3]
     resampled_index_list = []
     final_resampled_index_list = []
     ids_list = list(id_index_dict.keys())
@@ -444,8 +411,10 @@ def resample_from_id_index_dict_old(id_index_dict, max_number_per_sample, bad_pa
 def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=None, shuffle_mix_up_ratio=0.2,
                         bad_particles_ratio=0.2,
                         is_bad_class=False, error_distribution=None, dataset_scores=None, scores_bar=0.8,
-                        balance_per_interval=False, interval_list=[0.3]):
+                        balance_per_interval=False, interval_list=None):
     # index_list = id_index_dict[my_id]
+    if interval_list is None:
+        interval_list = [0.3]
     if balance_per_interval:
         index_list = balance_from_scores_interval(20, index_list['score'], index_list['id'], num_min_per_interval=128,
                                                   interval_list=interval_list)
@@ -540,13 +509,15 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                          batch_size_all=None, shuffle_type=None, shuffle_mix_up_ratio=0.2, my_seed=0,
                                          dataset_id_map=None, only_mixup_bad_particles=False,
                                          balance_per_interval=False,
-                                         index_list=[0.3],
+                                         index_list=None,
 
                                          # error_balance=None,
                                          # mean_error_dis_dict=None,
                                          # data_error_dis_dict=None
                                          ):
     random.seed(my_seed)
+    if index_list is None:
+        index_list = [0.3]
     if isinstance(shuffle_type, int):
         per_batch_num = shuffle_type
         shuffle_type = 'batch'

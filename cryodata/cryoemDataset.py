@@ -3,12 +3,9 @@ from cryodata.data_preprocess.mrc_preprocess import to_int8
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
-# from torchvision import transforms
 import os
 import pickle
 import random
-# import mrcfile
-# from PIL import Image
 import torch
 from io import BytesIO
 import json
@@ -19,10 +16,8 @@ import logging
 # Add a module-level logger
 logger = logging.getLogger(__name__)
 
-
-# import time
-# from torch.utils.data import DataLoader
-# from memory_profiler import profile
+# Pixels threshold above which an image is classified as a micrograph rather than a particle
+MICROGRAPH_SIZE_THRESHOLD = 384
 
 
 class MyEmFile(object):
@@ -278,104 +273,7 @@ class CryoMetaData(MyEmFile):
             if len(pose_id_map2) > 0:
                 self.pose_id_map2 = pose_id_map2
 
-        # with open(data_path + '/labels_for_training.data',
-        #           'rb') as filehandle:
-        #     self.labels_for_training = pickle.load(filehandle)
-        # with open(data_path + '/probabilities_for_sampling.data',
-        #           'rb') as filehandle:
-        #     self.probabilities_for_sampling = pickle.load(filehandle)
 
-    # def preprocess_trainset_valset_index(self, valset_name=[], dataset_except_names=[], is_balance=False,
-    #                                      max_resample_num=None, max_resample_num_val=None, ratio_balance_train=[0.35,0.3,0.35],
-    #                                      max_number_per_sample=None):
-    #     valset_name_id = [self.protein_id_dict[name] for name in valset_name]
-    #     dataset_except_names_id = [self.protein_id_dict[name] for name in dataset_except_names]
-    #     id_sum_dict = {id: 0 for id in self.protein_id_dict.values()}
-    #     dataset_index = []
-    #     valset_index = []
-    #     positive_index = []
-    #     middle_index = []
-    #     negative_index = []
-    #     resample_num_p = 0
-    #     resample_num_m=0
-    #     resample_num_n = 0
-    #     if len(valset_name_id) > 0 or len(dataset_except_names_id) > 0:
-    #         for i, protein_id in enumerate(self.protein_id_list):
-    #             if protein_id in valset_name_id:
-    #                 valset_index.append(i)
-    #             elif protein_id not in dataset_except_names_id:
-    #                 dataset_index.append(i)
-    #     else:
-    #         # dataset_index = list(range(len(self.all_processed_tif_path)))
-    #         dataset_index = list(range(self.length))
-    #     if is_balance:
-    #         for i in dataset_index:
-    #             if self.labels_classification[i] == 1:
-    #                 if max_number_per_sample is not None:
-    #                     if id_sum_dict[self.protein_id_list[i]] < max_number_per_sample:
-    #                         positive_index.append(i)
-    #                         id_sum_dict[self.protein_id_list[i]] += 1
-    #                 else:
-    #                     positive_index.append(i)
-    #             else:
-    #                 if max_number_per_sample is not None:
-    #                     if id_sum_dict[self.protein_id_list[i]] < max_number_per_sample:
-    #                         negative_index.append(i)
-    #                         id_sum_dict[self.protein_id_list[i]] += 1
-    #                 else:
-    #                     negative_index.append(i)
-    #         if len(positive_index) > len(negative_index):
-    #             resample_num = len(negative_index)
-    #             # positive_index=random.sample(positive_index,len(negative_index))
-    #         else:
-    #             resample_num = len(positive_index)
-    #             # negative_index=random.sample(negative_index,len(positive_index))
-    #         if max_resample_num is not None:
-    #             resample_num_p = int(max_resample_num * ratio_balance_train[1]) if max_resample_num * ratio_balance_train[1] < len(
-    #                 positive_index) else resample_num
-    #             resample_num_n = max_resample_num - resample_num_p
-    #         else:
-    #             resample_num_p = resample_num
-    #             resample_num_n = resample_num
-    #
-    #         sub_positive_index = random.sample(positive_index, resample_num_p)
-    #         sub_negative_index = random.sample(negative_index, resample_num_n)
-    #         # if len(positive_index)>len(negative_index):
-    #         #     positive_index=random.sample(positive_index,len(negative_index))
-    #         # else:
-    #         #     negative_index=random.sample(negative_index,len(positive_index))
-    #         dataset_index = sub_positive_index + sub_negative_index
-    #         if max_resample_num_val is not None:
-    #             if len(valset_index) > max_resample_num_val:
-    #                 valset_index = random.sample(valset_index, max_resample_num_val)
-    #     elif max_resample_num is not None:
-    #         if len(dataset_index) > max_resample_num:
-    #             dataset_index = random.sample(dataset_index, max_resample_num)
-    #     return dataset_index, valset_index, positive_index, negative_index, (resample_num_p, resample_num_n)
-
-    # def preprocess_trainset_valset_index_finetune(self, valset_name=[], dataset_except_names=[],
-    #                                               positive_ratio=0.5,
-    #                                               max_number_per_sample=None, is_valset=False):
-    #     if is_valset:
-    #         id_index_dict_pos = {id: [] for name, id in self.protein_id_dict.items() if name.lower().endswith(
-    #             'good') and name in valset_name and name not in dataset_except_names}
-    #         id_index_dict_neg = {id: [] for name, id in self.protein_id_dict.items() if name.lower().endswith(
-    #             'bad') and name in valset_name and name not in dataset_except_names}
-    #     else:
-    #         id_index_dict_pos = {id: [] for name, id in self.protein_id_dict.items() if name.lower().endswith(
-    #             'good') and name not in valset_name and name not in dataset_except_names}
-    #         id_index_dict_neg = {id: [] for name, id in self.protein_id_dict.items() if name.lower().endswith(
-    #             'bad') and name not in valset_name and name not in dataset_except_names}
-    #     protein_id_list_np = np.array(self.protein_id_list)
-    #     for name, id in self.protein_id_dict.items():
-    #         if name.lower().endswith('good'):
-    #             id_index_dict_pos[id] = np.where(protein_id_list_np == id)[0].tolist()
-    #         elif name.lower().endswith('bad'):
-    #             id_index_dict_neg[id] = np.where(protein_id_list_np == id)[0].tolist()
-    #     resample_num_p = int(max_number_per_sample * 4 * positive_ratio * len(id_index_dict_neg) / (
-    #                 len(id_index_dict_pos) + len(id_index_dict_neg)))
-    #     resample_num_n = int(max_number_per_sample * 2 - resample_num_p)
-    #     return id_index_dict_pos, id_index_dict_neg, (resample_num_p, resample_num_n)
 
     def preprocess_trainset_valset_index_finetune(self,
                                                   # valset_name=[],
@@ -746,7 +644,7 @@ class CryoEMDataset(Dataset):
         mrcdata_rotate2 = None  # 初始化
 
         # Determine if this is micrographs data (mics) or particles data (ptcls)
-        is_mics = True if mrcdata.size[-1] > 384 else False
+        is_mics = True if mrcdata.size[-1] > MICROGRAPH_SIZE_THRESHOLD else False
 
         if self.needs_aug2:
 

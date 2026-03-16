@@ -68,7 +68,7 @@ def symmetrize_ht(ht, pre_allocated=False):
 
 def symmetrize_ht_torch(ht):
     if ht.ndim == 2:
-        ht = ht[np.newaxis, ...]
+        ht = ht.unsqueeze(0)
     assert ht.ndim == 3
     n = ht.shape[0]
 

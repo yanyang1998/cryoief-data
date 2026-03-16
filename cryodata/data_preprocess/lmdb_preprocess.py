@@ -3,14 +3,39 @@ import pickle
 import numpy as np
 import lmdb
 import multiprocessing
+import logging
 from PIL import Image
-# from io import BytesIO
 from tqdm import tqdm
-# import torch
 from .mrc_preprocess import mrcs_resize, mrcs_to_int8, window_mask, raw_csdata_process_from_cryosparc_dir
 from . import fft, mrc
-# from . import mrc
 import gc
+
+logger = logging.getLogger(__name__)
+
+
+def _open_lmdb_set(base_path, map_size, generate_processed_data, save_raw_data, generate_ft_data):
+    """Build paths, create directories, and open LMDB environments for one dataset location."""
+    lmdb_paths = {}
+    if generate_processed_data:
+        lmdb_paths['processed'] = os.path.join(base_path, 'lmdb_processed')
+    if save_raw_data:
+        lmdb_paths['raw'] = os.path.join(base_path, 'lmdb_raw')
+    if generate_ft_data:
+        lmdb_paths['FT'] = os.path.join(base_path, 'lmdb_FT')
+    for path in lmdb_paths.values():
+        os.makedirs(path, exist_ok=True)
+    return {name: lmdb.open(path, map_size=map_size[name], readonly=False, create=True, max_readers=128)
+            for name, path in lmdb_paths.items()}
+
+
+def _write_to_lmdb(envs, processed_data_by_type, item_index, num_items):
+    """Write a batch of processed items into their respective LMDB environments."""
+    for data_type, data_list in processed_data_by_type.items():
+        if data_type in envs:
+            with envs[data_type].begin(write=True) as txn:
+                for i in range(num_items):
+                    key = f"{item_index + i}".encode()
+                    txn.put(key, data_list[i])
 
 
 def create_lmdb_dataset(image_path_list, save_data_path, map_size,
@@ -46,15 +71,9 @@ def create_lmdb_dataset(image_path_list, save_data_path, map_size,
             protein_item_counters = {}
         else:
             print("INFO: Creating a single combined LMDB dataset.")
-            # 统一存储模式下，预先创建好环境
-            global_lmdb_paths = {}
-            if generate_processed_data: global_lmdb_paths['processed'] = os.path.join(save_data_path, 'lmdb_data',
-                                                                                      'lmdb_processed')
-            if save_raw_data: global_lmdb_paths['raw'] = os.path.join(save_data_path, 'lmdb_data', 'lmdb_raw')
-            if generate_ft_data: global_lmdb_paths['FT'] = os.path.join(save_data_path, 'lmdb_data', 'lmdb_FT')
-            for path in global_lmdb_paths.values(): os.makedirs(path, exist_ok=True)
-            global_envs = {name: lmdb.open(path, map_size=map_size[name], readonly=False, create=True, max_readers=128)
-                           for name, path in global_lmdb_paths.items()}
+            global_envs = _open_lmdb_set(
+                os.path.join(save_data_path, 'lmdb_data'), map_size,
+                generate_processed_data, save_raw_data, generate_ft_data)
             global_item_index = 0
 
         with tqdm(total=len(tasks), desc="Processing source files") as pbar:
@@ -70,43 +89,21 @@ def create_lmdb_dataset(image_path_list, save_data_path, map_size,
                     if path_id_data and mean_std_stats is not None:
                         num_items_in_batch = len(path_id_data)
 
-                        # --- 写入逻辑分支 ---
+                        # --- Write branch ---
                         if split_by_protein:
-                            # --- 按蛋白分割写入 ---
                             if protein_name not in protein_envs:
-                                # 首次遇到此蛋白，为其创建LMDB环境和计数器
                                 protein_base_path = os.path.join(save_data_path, 'lmdb_data', protein_name)
-                                protein_lmdb_paths = {}
-                                if generate_processed_data: protein_lmdb_paths['processed'] = os.path.join(
-                                    protein_base_path, 'lmdb_processed')
-                                if save_raw_data: protein_lmdb_paths['raw'] = os.path.join(protein_base_path,
-                                                                                           'lmdb_raw')
-                                if generate_ft_data: protein_lmdb_paths['FT'] = os.path.join(protein_base_path,
-                                                                                             'lmdb_FT')
-                                for path in protein_lmdb_paths.values(): os.makedirs(path, exist_ok=True)
-                                protein_envs[protein_name] = {
-                                    name: lmdb.open(path, map_size=map_size[name], readonly=False, create=True,
-                                                    max_readers=128) for name, path in protein_lmdb_paths.items()}
+                                protein_envs[protein_name] = _open_lmdb_set(
+                                    protein_base_path, map_size,
+                                    generate_processed_data, save_raw_data, generate_ft_data)
                                 protein_item_counters[protein_name] = 0
-
-                            # 使用特定于该蛋白的环境和计数器
-                            current_envs = protein_envs[protein_name]
                             current_item_index = protein_item_counters[protein_name]
-                            for data_type, data_list in processed_data_by_type.items():
-                                if data_type in current_envs:
-                                    with current_envs[data_type].begin(write=True) as txn:
-                                        for i in range(num_items_in_batch):
-                                            key = f"{current_item_index + i}".encode()  # 使用局部计数器
-                                            txn.put(key, data_list[i])
+                            _write_to_lmdb(protein_envs[protein_name], processed_data_by_type,
+                                           current_item_index, num_items_in_batch)
                             protein_item_counters[protein_name] += num_items_in_batch
                         else:
-                            # --- 统一写入 (旧逻辑) ---
-                            for data_type, data_list in processed_data_by_type.items():
-                                if data_type in global_envs:
-                                    with global_envs[data_type].begin(write=True) as txn:
-                                        for i in range(num_items_in_batch):
-                                            key = f"{global_item_index + i}".encode()  # 使用全局计数器
-                                            txn.put(key, data_list[i])
+                            _write_to_lmdb(global_envs, processed_data_by_type,
+                                           global_item_index, num_items_in_batch)
                             global_item_index += num_items_in_batch
 
                         # --- 全局元数据聚合 (所有模式下共用) ---
@@ -160,48 +157,12 @@ def create_lmdb_dataset(image_path_list, save_data_path, map_size,
     with open(os.path.join(save_data_path, 'mean_std_id_dict.data'), 'wb') as f:
         pickle.dump(mean_std_id_dict, f)
 
-    # path_id_data_np = np.array(path_id_data_list)
-    # if cs_dir is not None and path_id_data_np.size > 0:
-    #     cs_path_list, score_path_list, particles_path_list, hetro_scores_list = [], [], [], []
-    #     sorted_name_list = sorted(protein_id_dict, key=protein_id_dict.get)
-    #     for entry in sorted_name_list:
-    #         entry_path = os.path.join(raw_data_path, entry)
-    #         cs_entry_path = os.path.join(cs_dir, entry)
-    #         score_entry_path = os.path.join(score_data_path, entry)
-    #         if os.path.isdir(entry_path):
-    #             particles_path_list.append(entry_path)
-    #             cs_path_list.append(os.path.join(cs_entry_path, cs_name))
-    #             score_path_list.append(score_entry_path)
-    #     for i, path in enumerate(particles_path_list):
-    #         print(f'Processing metadata for {i + 1}/{len(particles_path_list)}: {path}')
-    #         path_id_my_data = path_id_data_np[np.array(protein_id_list) == i].tolist()
-    #         hetro_score_path = os.path.join(score_path_list[i], 'picked_particle_scores.json')
-    #         if os.path.exists(hetro_score_path):
-    #             with open(hetro_score_path, 'r') as f:
-    #                 hetro_score = json.load(f)
-    #             hetro_score_id2score, path_id_to_uid = transfer_htero_score_one_dataset(cs_path_list[i], hetro_score)
-    #             hetro_scores_list.extend([hetro_score_id2score.get(path_id_to_uid.get(item))
-    #                                       for item in path_id_my_data if
-    #                                       path_id_to_uid.get(item) in hetro_score_id2score])
-    #         else:
-    #             hetro_scores_list.extend([1.0] * len(path_id_my_data))
-    #     if norm and hetro_scores_list:
-    #         hetro_scores_list_np = np.array(hetro_scores_list)
-    #         min_val, max_val = np.min(hetro_scores_list_np), np.max(hetro_scores_list_np)
-    #         if min_val != max_val: hetro_scores_list_np = (hetro_scores_list_np - min_val) / (max_val - min_val)
-    #         hetro_scores_list = list(hetro_scores_list_np)
-    #     with open(os.path.join(save_data_path, 'labels_classification.data'), 'wb') as f:
-    #         pickle.dump(hetro_scores_list, f)
-
     if protein_id_dict:
         with open(os.path.join(save_data_path, 'protein_id_dict.data'), 'wb') as f:
             pickle.dump(protein_id_dict, f)
     if protein_id_list:
         with open(os.path.join(save_data_path, 'protein_id_list.data'), 'wb') as f:
             pickle.dump(protein_id_list, f)
-    # if path_id_data_list:
-    #     with open(os.path.join(save_data_path, 'path_id_data.data'), 'wb') as f:
-    #         pickle.dump(path_id_data_np, f)
     print("\nLMDB dataset creation and metadata saving finished.")
 
 
@@ -298,7 +259,7 @@ def lmdb_process_item(args):
         gc.collect()
         return (idx, path_id_my_data, processed_data_by_type, mean_std_stats)
     except Exception as e:
-        print(f"Error processing {data_path}: {str(e)}")
+        logger.error(f"Error processing {data_path}: {e}", exc_info=True)
         gc.collect()
         return (idx, [], {}, None)
 
@@ -314,7 +275,7 @@ def process_one_dataset_paths(dir_one_dataset, num_resample_per_dataset=40000):
                 num_resample_mrcs_per_dataset.extend(
                     [int(num_resample_per_dataset / len(mrcs_names_list_temp))] * len(mrcs_names_list_temp))
         except Exception as e:
-            print(f"Could not process directory {dir_one_dataset}: {e}")
+            logger.warning(f"Could not process directory {dir_one_dataset}: {e}")
     return mrc_dir_list, mrcs_names_list_process, num_resample_mrcs_per_dataset
 
 
