@@ -4,6 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 <a href="https://doi.org/10.1038/s41592-025-02916-8"><img src="https://img.shields.io/badge/Paper-Nature%20Methods-blue" style="max-width: 100%;"></a>
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Downloads](https://static.pepy.tech/badge/cryodata)](https://pepy.tech/project/cryodata)
 
 Cryo-EM data processing tools for deep learning. This package provides a full pipeline for converting raw cryo-EM particle data from [cryoSPARC](https://cryosparc.com/) into PyTorch-ready datasets, as used by [cryo-IEF](https://github.com/westlake-repl/Cryo-IEF), [CryoDECO](https://github.com/yanyang1998/CryoDECO) and [CryoWizard](https://github.com/SMART-StructBio-AI/CryoWizard).
 
