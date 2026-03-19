@@ -26,7 +26,7 @@ pip install cryodata
 For development:
 
 ```bash
-git clone https://github.com/yanyang1998/cryoief-data
+git clone https://github.com/SMART-StructBio-AI/cryoief-data
 cd cryoief-data
 pip install -e .
 ```
