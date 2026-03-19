@@ -14,8 +14,8 @@ from setuptools import find_packages, setup, Command
 
 # Package meta-data.
 NAME = 'cryodata'
-DESCRIPTION = 'Cryo-EM data processing tools for deep learning (e.g., cryo-IEF).'
-URL = 'https://github.com/yanyang1998/cryoief-data'
+DESCRIPTION = 'Cryo-EM data processing tools for deep learning.'
+URL = 'https://github.com/SMART-StructBio-AI/cryoief-data'
 EMAIL = 'y.yan98@outlook.com'
 AUTHOR = 'Yang Yan'
 REQUIRES_PYTHON = '>=3.9.0'
