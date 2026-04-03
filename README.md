@@ -231,52 +231,7 @@ A `torch.utils.data.Dataset` that loads preprocessed cryo-EM particles from an L
 
 ---
 
-### Resampling
 
-#### `MyResampleSampler`
-
-```python
-from cryodata import MyResampleSampler
-
-sampler = MyResampleSampler(
-    data=dataset,
-    id_index_dict_pos=pos_dict,   # {class_id: [indices]} for high-quality particles
-    id_index_dict_mid=mid_dict,   # {class_id: [indices]} for medium-quality particles
-    id_index_dict_neg=neg_dict,   # {class_id: [indices]} for low-quality particles
-    resample_num_pos=500,         # max particles per class from the positive set
-    resample_num_mid=200,         # max particles per class from the medium set
-    resample_num_neg=100,         # max particles per class from the negative set
-    calculated_score_ratio=0.75,  # optional best-effort target ratio for source 0 particles
-    missing_score_ratio=0.10,     # optional best-effort target ratio for source 2 particles
-)
-```
-
-A `torch.utils.data.Sampler` designed for fine-tuning scenarios where particles have been labelled as positive, mid, or negative quality. At each epoch it resamples each class up to the specified cap, then concatenates the three groups into a single index list. Shuffle behaviour is controlled by `shuffle_type` (`'all'`, `'class'`, or `'batch'`). `calculated_score_ratio` targets particles with `label_score_source == 0`, while `missing_score_ratio` targets particles with `label_score_source == 2`. Remaining slots are backfilled from the leftover pool, and the two ratios must sum to at most `1.0`.
-
----
-
-#### `MyResampleSampler_pretrain`
-
-```python
-from cryodata import MyResampleSampler_pretrain
-
-sampler = MyResampleSampler_pretrain(
-    id_index_dict=id_index_dict,                         # {class_id: [indices]}
-    batch_size_all=256,                                  # total batch size across all processes
-    max_number_per_sample=1000,                          # max particles sampled per class per epoch
-    shuffle_type='class',                                # 'all', 'class', or 'batch' (int)
-    shuffle_mix_up_ratio=0.2,                            # fraction of each class used for cross-class mixing
-    bad_particles_ratio=0.1,                             # fraction of slots given to low-quality particles
-    id_score_source_dict=meta_data.id_score_source_dict,
-    id_used_default_score_dict=meta_data.id_used_default_score_dict,
-    calculated_score_ratio=0.75,                         # optional best-effort target ratio for source 0 particles
-    missing_score_ratio=0.10,                            # optional best-effort target ratio for source 2 particles
-)
-```
-
-A `torch.utils.data.Sampler` for pre-training with large multi-class datasets. Resamples each class up to `max_number_per_sample` and optionally mixes a fraction of particles across classes to improve generalisation. Supports multi-process training via `num_processes`. When `id_score_source_dict` is available, `calculated_score_ratio` targets source `0` particles and `missing_score_ratio` targets source `2` particles. Older callers can still pass only `id_used_default_score_dict` for binary calculated-vs-default control, but that legacy path cannot distinguish source `1` from source `2`.
-
----
 
 ### Format Conversion
 
