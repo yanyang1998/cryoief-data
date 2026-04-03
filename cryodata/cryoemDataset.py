@@ -20,6 +20,36 @@ logger = logging.getLogger(__name__)
 MICROGRAPH_SIZE_THRESHOLD = 384
 
 
+def _derive_used_default_score_from_source(score_source_values):
+    return [0 if int(value) == 0 else 1 for value in score_source_values]
+
+
+def _normalize_score_source_labels(score_source_values, legacy_default_values, expected_length):
+    if score_source_values is not None:
+        score_source_list = list(score_source_values)
+        if len(score_source_list) == 0:
+            return [0] * expected_length
+        if len(score_source_list) != expected_length:
+            logger.warning(
+                f"labels_score_source.data has {len(score_source_list)} entries; expected {expected_length}. Falling back to zeros."
+            )
+            return [0] * expected_length
+        return [int(value) for value in score_source_list]
+
+    if legacy_default_values is not None:
+        legacy_default_list = list(legacy_default_values)
+        if len(legacy_default_list) == 0:
+            return [0] * expected_length
+        if len(legacy_default_list) != expected_length:
+            logger.warning(
+                f"labels_used_default_score.data has {len(legacy_default_list)} entries; expected {expected_length}. Falling back to zeros."
+            )
+            return [0] * expected_length
+        return [0 if int(flag) == 0 else 1 for flag in legacy_default_list]
+
+    return [0] * expected_length
+
+
 class MyEmFile(object):
     def __init__(self, emfile_path=None, selected_emfile_path=None, filetype='star'):
         self.filetype = filetype
@@ -111,6 +141,8 @@ class CryoMetaData(MyEmFile):
 
         self.processed_data_path = processed_data_path
         self.id_index_dict = None
+        self.id_score_source_dict = None
+        self.id_used_default_score_dict = None
 
         assert processed_data_path is not None, "processed_data_path must be provided"
         self.load_preprocessed_data_path(data_path=processed_data_path,
@@ -212,6 +244,23 @@ class CryoMetaData(MyEmFile):
         else:
             self.labels_classification = [1] * self.length
 
+        labels_score_source_raw = None
+        if os.path.exists(data_path + '/labels_score_source.data'):
+            with open(data_path + '/labels_score_source.data', 'rb') as filehandle:
+                labels_score_source_raw = pickle.load(filehandle)
+
+        legacy_default_score_labels = None
+        if labels_score_source_raw is None and os.path.exists(data_path + '/labels_used_default_score.data'):
+            with open(data_path + '/labels_used_default_score.data', 'rb') as filehandle:
+                legacy_default_score_labels = pickle.load(filehandle)
+
+        self.labels_score_source = _normalize_score_source_labels(
+            labels_score_source_raw,
+            legacy_default_score_labels,
+            self.length,
+        )
+        self.labels_used_default_score = _derive_used_default_score_from_source(self.labels_score_source)
+
         # with open(path_out + 'output_tif_select_label.data', 'rb') as filehandle:
         #     self.tifs_selection_label = pickle.load(filehandle)
 
@@ -296,11 +345,14 @@ class CryoMetaData(MyEmFile):
 
         protein_id_list_np = np.array(self.protein_id_list)
         labels_classification_np = np.array(self.labels_classification)
+        labels_score_source_np = np.array(self.labels_score_source)
+        labels_used_default_score_np = np.array(self.labels_used_default_score)
         for name, id in self.protein_id_dict.items():
             item_pos = {}
             item_neg = {}
             item_mid = {}
             # if name not in dataset_except_names:
+            protein_index = np.where(protein_id_list_np == id)[0]
             if name.lower().endswith('good'):
                 # if name in valset_name and is_valset:
                 #     id_index_dict_pos[id] = np.where(protein_id_list_np == id)[0].tolist()
@@ -308,8 +360,10 @@ class CryoMetaData(MyEmFile):
                 #     id_index_dict_pos[id] = np.where(protein_id_list_np == id)[0].tolist()
                 #     if data_error_dis_dict is not None:
                 #         data_error_dis_dict_pos[id] = data_error_dis_dict[id] / np.sum(data_error_dis_dict[id])
-                item_pos['id'] = np.where(protein_id_list_np == id)[0].tolist()
+                item_pos['id'] = protein_index.tolist()
                 item_pos['score'] = [1.0] * len(item_pos['id'])
+                item_pos['score_source'] = labels_score_source_np[protein_index].tolist()
+                item_pos['used_default_score'] = labels_used_default_score_np[protein_index].tolist()
             elif name.lower().endswith('bad'):
                 # if name in valset_name and is_valset:
                 #     id_index_dict_neg[id] = np.where(protein_id_list_np == id)[0].tolist()
@@ -317,10 +371,11 @@ class CryoMetaData(MyEmFile):
                 #     id_index_dict_neg[id] = np.where(protein_id_list_np == id)[0].tolist()
                 #     if data_error_dis_dict is not None:
                 #         data_error_dis_dict_neg[id] = data_error_dis_dict[id] / np.sum(data_error_dis_dict[id])
-                item_neg['id'] = np.where(protein_id_list_np == id)[0].tolist()
+                item_neg['id'] = protein_index.tolist()
                 item_neg['score'] = [0.0] * len(item_neg['id'])
+                item_neg['score_source'] = labels_score_source_np[protein_index].tolist()
+                item_neg['used_default_score'] = labels_used_default_score_np[protein_index].tolist()
             else:
-                protein_index = np.where(protein_id_list_np == id)[0]
                 pos_index = protein_index[labels_classification_np[protein_index] >= middle_range_balance_train[1]]
                 # Discard data with a score less than 0
                 neg_index = protein_index[(labels_classification_np[protein_index] < middle_range_balance_train[0]) & (
@@ -338,6 +393,8 @@ class CryoMetaData(MyEmFile):
                         # id_index_dict_mid[id] = mid_index.tolist()
                         item_mid['id'] = mid_index.tolist()
                         item_mid['score'] = labels_classification_np[mid_index].tolist()
+                        item_mid['score_source'] = labels_score_source_np[mid_index].tolist()
+                        item_mid['used_default_score'] = labels_used_default_score_np[mid_index].tolist()
                         # if data_error_dis_dict is not None:
                         #     mid_dis = data_error_dis_dict[id][
                         #         (labels_classification_np[protein_index] >= middle_range_balance_train[0]) & (
@@ -360,9 +417,13 @@ class CryoMetaData(MyEmFile):
                 if len(pos_index) > 0:
                     item_pos['id'] = pos_index.tolist()
                     item_pos['score'] = labels_classification_np[pos_index].tolist()
+                    item_pos['score_source'] = labels_score_source_np[pos_index].tolist()
+                    item_pos['used_default_score'] = labels_used_default_score_np[pos_index].tolist()
                 if len(neg_index) > 0:
                     item_neg['id'] = neg_index.tolist()
                     item_neg['score'] = labels_classification_np[neg_index].tolist()
+                    item_neg['score_source'] = labels_score_source_np[neg_index].tolist()
+                    item_neg['used_default_score'] = labels_used_default_score_np[neg_index].tolist()
             if len(item_pos) > 0:
                 id_index_dict_pos[id] = item_pos
             if len(item_neg) > 0:
@@ -443,7 +504,11 @@ class CryoMetaData(MyEmFile):
         #     id_index_dict[id].append(i)
         id_index_dict = {id: [] for id in target_protein_id_dict.values()}
         id_scores_dict = {}
+        id_score_source_dict = {}
+        id_used_default_score_dict = {}
         scores_np = np.array(self.labels_classification)
+        score_source_np = np.array(self.labels_score_source)
+        used_default_score_np = np.array(self.labels_used_default_score)
         protein_id_list_np = np.array(target_protein_id_list)
         for id in target_protein_id_dict.values():
             # aaa = np.where(protein_id_list_np == id)
@@ -454,7 +519,11 @@ class CryoMetaData(MyEmFile):
             else:
                 id_index_dict[id] = id_selected
             id_scores_dict[id] = scores_np[id_index_dict[id]]
+            id_score_source_dict[id] = score_source_np[id_index_dict[id]]
+            id_used_default_score_dict[id] = used_default_score_np[id_index_dict[id]]
         self.id_index_dict = id_index_dict
+        self.id_score_source_dict = id_score_source_dict
+        self.id_used_default_score_dict = id_used_default_score_dict
         return id_index_dict, dataset_id_map, id_scores_dict
 
 
@@ -548,6 +617,8 @@ class CryoEMDataset(Dataset):
         self.tif_path_list_raw_ctf_correction = metadata.all_tif_path_ctf_correction
         self.labels_for_clustering = metadata.labels_for_clustering
         self.labels_classification = metadata.labels_classification
+        self.labels_score_source = metadata.labels_score_source
+        self.labels_used_default_score = metadata.labels_used_default_score
         self.id_index_dict = metadata.id_index_dict
 
         self.slice_setting = slice_setting
@@ -614,21 +685,19 @@ class CryoEMDataset(Dataset):
 
     # @profile(precision=4)
     def __getitem__(self, item):
-        # local_crops1 = []  <-- 删除这两行，下面会通过函数生成
-        # local_crops2 = []
-
         '''get mrcdata1 and aug1'''
         mrcdata = self.get_mrcdata(item=item)
 
         weight = float(1.0)
 
         '''get labels data'''
-        # ... (这部分保持不变) ...
         if self.labels_for_clustering is not None and len(self.labels_for_clustering) > item:
             label_for_clustering = self.labels_for_clustering[item]
         else:
             label_for_clustering = -1
         label_for_classification = self.labels_classification[item]
+        label_score_source = self.labels_score_source[item]
+        label_used_default_score = self.labels_used_default_score[item]
         if self.use_triplex_labels:
             if label_for_classification > self.bar_score:
                 label_for_classification = 1.0
@@ -666,7 +735,7 @@ class CryoEMDataset(Dataset):
                 else:
                     mrcdata2 = mrcdata
 
-            # 修改点：接收返回的 rotate image
+            # 接收返回的 rotate image
             aug1, mrcdata_rotate1 = self.mrcdata_aug(mrcdata, is_random_rotate_transform=is_random_rotate_transform,
                                                      is_mix_pos=is_mix_pos,
                                                      is_mics=is_mics)
@@ -675,7 +744,7 @@ class CryoEMDataset(Dataset):
                                                      is_mix_pos=is_mix_pos,
                                                      is_mics=is_mics)
         else:
-            # 修改点：接收返回的 rotate image
+            # 接收返回的 rotate image
             aug1, mrcdata_rotate1 = self.mrcdata_aug(mrcdata)
             aug2 = None
             mrcdata_rotate2 = None
@@ -710,9 +779,11 @@ class CryoEMDataset(Dataset):
             'weight': weight,
             'label_for_clustering': label_for_clustering,
             'label_for_classification': label_for_classification,
+            'label_score_source': label_score_source,
+            'label_used_default_score': label_used_default_score,
             'mask': mask,
             'item': item,
-            'local_crops1': local_crops1,  # 现在这里有数据了
+            'local_crops1': local_crops1, 
             'local_crops2': local_crops2,
             'protein_id': protein_id
         }
@@ -788,22 +859,28 @@ class CryoEMDataset(Dataset):
         item_list = self.id_index_dict.get(protein_id, [])
         min_id = self.cumulative_sizes[protein_id - 1] if protein_id > 0 else 0
 
-        # min_id = min(item_list)
         nearest = None
         protein_name = self.protein_id_dict_reverse[protein_id]
         pose_items_id = []
         item1_pose_id = None
-        if item - min_id in self.pose_id_map[protein_id]:
-            item1_pose_id = self.pose_id_map[protein_id][item - min_id]
-            # if len(item_list) > 1:
-            #     item2 = random.choice(item_list)
+        protein_pose_map = self.pose_id_map.get(protein_id) if isinstance(self.pose_id_map, dict) else None
+        if protein_pose_map is None:
+            return nearest, min_id, protein_name, pose_items_id, item1_pose_id
 
-            self.pose_indices.load(os.path.join(self.processed_data_path, 'pose_data', protein_name + '_pose.ann'))
-            nearest = self.pose_indices.get_nns_by_item(item1_pose_id,
-                                                        int(len(item_list) / pose_divide) if N is None else N,
-                                                        include_distances=False)
-            pose_items_id = list(self.pose_id_map[protein_id].keys())
-            # nearest=nearest[1:]
+        pose_file_path = os.path.join(self.processed_data_path, 'pose_data', protein_name + '_pose.ann')
+        if not os.path.exists(pose_file_path):
+            return nearest, min_id, protein_name, pose_items_id, item1_pose_id
+
+        local_item_id = item - min_id
+        if local_item_id in protein_pose_map:
+            item1_pose_id = protein_pose_map[local_item_id]
+            self.pose_indices.load(pose_file_path)
+            nearest = self.pose_indices.get_nns_by_item(
+                item1_pose_id,
+                int(len(item_list) / pose_divide) if N is None else N,
+                include_distances=False,
+            )
+            pose_items_id = list(protein_pose_map.keys())
         return nearest, min_id, protein_name, pose_items_id, item1_pose_id
 
     def get_corr_slice(self, item):

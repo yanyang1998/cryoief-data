@@ -232,24 +232,28 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
         if filename.endswith('passthrough_particles.cs'):
             passthrough_particles_path = os.path.join(raw_data_path, filename)
 
-        if filename.endswith('_split_0.cs'):
+        elif filename.endswith('_split_0.cs'):
             passthrough_particles_path = os.path.join(raw_data_path, filename)
 
-        if filename.endswith('extracted_particles.cs'):
+        elif filename.endswith('extracted_particles.cs'):
             particles_cs_path = os.path.join(raw_data_path, filename)
 
-        if filename.endswith('imported_particles.cs'):
+        elif filename.endswith('imported_particles.cs'):
             particles_cs_path = os.path.join(raw_data_path, filename)
 
-        if filename.endswith('restacked_particles.cs'):
+        elif filename.endswith('restacked_particles.cs'):
             particles_cs_path = os.path.join(raw_data_path, filename)
 
-        if filename.endswith('split_0000.cs'):
+        elif filename.endswith('split_0000.cs'):
             particles_cs_path = os.path.join(raw_data_path, filename)
 
-        if filename.endswith('downsampled_particles.cs'):
+        elif filename.endswith('downsampled_particles.cs'):
             particles_cs_path = os.path.join(raw_data_path, filename)
-        if filename.endswith('.cs'):
+        
+        elif filename.endswith('_particles.cs'):
+            particles_cs_path = os.path.join(raw_data_path, filename)
+
+        elif filename.endswith('.cs'):
             other_cs_path = os.path.join(raw_data_path, filename)
 
     if processed_cs_path is not None and os.path.exists(processed_cs_path):
