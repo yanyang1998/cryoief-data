@@ -186,6 +186,17 @@ class CryoMetaData(MyEmFile):
         # pass
 
     def load_preprocessed_data_path(self, data_path, ctf_correction_averages, ctf_correction_train):
+        def _validate_loaded_label_length(name, values, allow_empty_default=False):
+            if values is None:
+                return
+            values_len = len(values)
+            if allow_empty_default and values_len == 0:
+                return
+            if values_len != self.length:
+                raise ValueError(
+                    f"{name} length mismatch: expected {self.length}, found {values_len} in {data_path}."
+                )
+
         # path_out = path_result_dir + '/tmp/preprocessed_data/'
         if os.path.exists(data_path + '/output_tif_path.data'):
             with open(data_path + '/output_tif_path.data', 'rb') as filehandle:
@@ -233,6 +244,11 @@ class CryoMetaData(MyEmFile):
         if os.path.exists(data_path + '/labels_for_clustering.data'):
             with open(data_path + '/labels_for_clustering.data', 'rb') as filehandle:
                 self.labels_for_clustering = pickle.load(filehandle)
+            _validate_loaded_label_length(
+                'labels_for_clustering.data',
+                self.labels_for_clustering,
+                allow_empty_default=True,
+            )
         else:
             self.labels_for_clustering = None
 
@@ -241,6 +257,8 @@ class CryoMetaData(MyEmFile):
                 self.labels_classification = pickle.load(filehandle)
             if len(self.labels_classification) == 0:
                 self.labels_classification = [1] * self.length
+            else:
+                _validate_loaded_label_length('labels_classification.data', self.labels_classification)
         else:
             self.labels_classification = [1] * self.length
 
