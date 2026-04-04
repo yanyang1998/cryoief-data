@@ -1,5 +1,6 @@
 # from models.get_transformers import to_int8
 from cryodata.data_preprocess.mrc_preprocess import to_int8
+from bisect import bisect_left
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Pixels threshold above which an image is classified as a micrograph rather than a particle
 MICROGRAPH_SIZE_THRESHOLD = 384
+LMDB_REFERENCE_MANIFEST_FILENAME = 'lmdb_reference_manifest.json'
 
 
 def _derive_used_default_score_from_source(score_source_values):
@@ -158,6 +160,14 @@ class CryoMetaData(MyEmFile):
             logger.warning(f"Failed to load pickle file {path}: {e}")
             return None
 
+    def _safe_load_json(self, path):
+        try:
+            with open(path, 'r') as fh:
+                return json.load(fh)
+        except Exception as e:
+            logger.warning(f"Failed to load JSON file {path}: {e}")
+            return None
+
     def close(self):
         """Close any open LMDB environments held by this metadata object."""
         # If lmdb_env or cached envs are present on the object, try to close them
@@ -197,6 +207,13 @@ class CryoMetaData(MyEmFile):
                     f"{name} length mismatch: expected {self.length}, found {values_len} in {data_path}."
                 )
 
+        self.lmdb_reference_manifest = None
+        manifest_path = os.path.join(data_path, LMDB_REFERENCE_MANIFEST_FILENAME)
+        if os.path.exists(manifest_path):
+            self.lmdb_reference_manifest = self._safe_load_json(manifest_path)
+            if self.lmdb_reference_manifest is None:
+                raise ValueError(f"Failed to load {LMDB_REFERENCE_MANIFEST_FILENAME} from {data_path}.")
+
         # path_out = path_result_dir + '/tmp/preprocessed_data/'
         if os.path.exists(data_path + '/output_tif_path.data'):
             with open(data_path + '/output_tif_path.data', 'rb') as filehandle:
@@ -209,7 +226,7 @@ class CryoMetaData(MyEmFile):
         else:
             self.all_tif_path_ctf_correction = None
 
-        if os.path.exists(data_path + '/lmdb_data'):
+        if self.lmdb_reference_manifest is not None or os.path.exists(data_path + '/lmdb_data'):
             # lmdb_env = lmdb.open(
             #     data_path + '/lmdb_data/lmdb_processed',
             #     readonly=True,
@@ -224,7 +241,10 @@ class CryoMetaData(MyEmFile):
                       'rb') as filehandle:
                 protein_id_list = pickle.load(filehandle)
             self.length = len(protein_id_list)
-            self.lmdb_path = data_path + '/lmdb_data/'
+            if os.path.exists(data_path + '/lmdb_data'):
+                self.lmdb_path = data_path + '/lmdb_data/'
+            else:
+                self.lmdb_path = None
             self.all_processed_tif_path = None
         else:
             # self.processed_tif_txn = None
@@ -571,8 +591,23 @@ class CryoEMDataset(Dataset):
         self.protein_id_list = metadata.protein_id_list
         self.protein_id_dict = metadata.protein_id_dict
         self.protein_id_dict_reverse = {v: k for k, v in self.protein_id_dict.items()}
+        self.lmdb_reference_manifest = getattr(metadata, 'lmdb_reference_manifest', None)
+        self.lmdb_reference_segments = {}
+        self.protein_min_index = {}
+        self.id_index_dict = metadata.id_index_dict or self._build_default_id_index_dict()
 
-        if self.lmdb_path is not None:
+        if self.protein_id_list is not None:
+            self.protein_min_index = self._build_protein_min_index()
+
+        if self.lmdb_reference_manifest is not None:
+            self.metadata = []
+            self.cumulative_sizes = []
+            self.worker_id = None
+            self.env_processed = {}
+            self.env_raw = {}
+            self.env_FT = {}
+            self._build_reference_lmdb_metadata()
+        elif self.lmdb_path is not None:
             lmdb_dir_name_list = list(self.protein_id_dict.keys())
             lmdb_dir = self.lmdb_path
             # self.lmdb_dir = lmdb_dir
@@ -637,7 +672,6 @@ class CryoEMDataset(Dataset):
         self.labels_classification = metadata.labels_classification
         self.labels_score_source = metadata.labels_score_source
         self.labels_used_default_score = metadata.labels_used_default_score
-        self.id_index_dict = metadata.id_index_dict
 
         self.slice_setting = slice_setting
         self.mix_pos_setting = mix_pos_setting
@@ -689,6 +723,135 @@ class CryoEMDataset(Dataset):
     def __len__(self):
         return self.tif_len
         # return len(self.tif_path_list)
+
+    def _build_default_id_index_dict(self):
+        id_index_dict = {protein_id: [] for protein_id in self.protein_id_dict.values()}
+        for index, protein_id in enumerate(self.protein_id_list):
+            id_index_dict.setdefault(protein_id, []).append(index)
+        return id_index_dict
+
+    def _build_protein_min_index(self):
+        protein_min_index = {}
+        for index, protein_id in enumerate(self.protein_id_list):
+            protein_min_index.setdefault(protein_id, index)
+        return protein_min_index
+
+    def _get_lmdb_entry_count(self, lmdb_dir):
+        env = lmdb.open(lmdb_dir, readonly=True, lock=False, readahead=False, meminit=False)
+        try:
+            with env.begin(write=False) as txn:
+                return txn.stat()['entries']
+        finally:
+            env.close()
+
+    def _build_reference_lmdb_metadata(self):
+        manifest = self.lmdb_reference_manifest
+        proteins = manifest.get('proteins') if isinstance(manifest, dict) else None
+        if not isinstance(proteins, list):
+            raise ValueError(f'{LMDB_REFERENCE_MANIFEST_FILENAME} must contain a proteins list.')
+
+        seen_protein_ids = set()
+        for protein_entry in proteins:
+            protein_name = protein_entry.get('protein_name')
+            protein_id = protein_entry.get('protein_id')
+            if protein_name not in self.protein_id_dict:
+                raise ValueError(
+                    f"{LMDB_REFERENCE_MANIFEST_FILENAME} contains unknown protein '{protein_name}'."
+                )
+            expected_protein_id = self.protein_id_dict[protein_name]
+            if protein_id != expected_protein_id:
+                raise ValueError(
+                    f"{LMDB_REFERENCE_MANIFEST_FILENAME} has protein_id={protein_id} for '{protein_name}', "
+                    f'expected {expected_protein_id}.'
+                )
+
+            segments = protein_entry.get('segments')
+            if not isinstance(segments, list) or not segments:
+                raise ValueError(
+                    f"{LMDB_REFERENCE_MANIFEST_FILENAME} contains no segments for '{protein_name}'."
+                )
+
+            normalized_segments = []
+            expected_local_start = 0
+            for segment in sorted(segments, key=lambda item: item.get('merged_local_start', -1)):
+                merged_local_start = int(segment.get('merged_local_start', -1))
+                count = int(segment.get('count', -1))
+                if merged_local_start != expected_local_start:
+                    raise ValueError(
+                        f"{LMDB_REFERENCE_MANIFEST_FILENAME} has non-contiguous segments for '{protein_name}'."
+                    )
+                if count <= 0:
+                    raise ValueError(
+                        f"{LMDB_REFERENCE_MANIFEST_FILENAME} has invalid count={count} for '{protein_name}'."
+                    )
+
+                db_paths = segment.get('db_paths')
+                if not isinstance(db_paths, dict) or 'lmdb_processed' not in db_paths:
+                    raise ValueError(
+                        f"{LMDB_REFERENCE_MANIFEST_FILENAME} segment for '{protein_name}' is missing lmdb_processed."
+                    )
+
+                processed_dir = db_paths['lmdb_processed']
+                raw_dir = db_paths.get('lmdb_raw')
+                ft_dir = db_paths.get('lmdb_FT')
+
+                if not os.path.isdir(processed_dir):
+                    raise FileNotFoundError(
+                        f"Referenced LMDB directory does not exist for '{protein_name}': {processed_dir}"
+                    )
+
+                entry_count = self._get_lmdb_entry_count(processed_dir)
+                if entry_count != count:
+                    raise ValueError(
+                        f"Referenced LMDB count mismatch for '{protein_name}' at {processed_dir}: "
+                        f'expected {count}, found {entry_count}.'
+                    )
+
+                normalized_segments.append(
+                    {
+                        'merged_local_start': merged_local_start,
+                        'count': count,
+                        'processed_dir': processed_dir,
+                        'raw_dir': raw_dir,
+                        'ft_dir': ft_dir,
+                    }
+                )
+                expected_local_start += count
+
+            expected_count = len(self.id_index_dict.get(protein_id, []))
+            if expected_local_start != expected_count:
+                raise ValueError(
+                    f"{LMDB_REFERENCE_MANIFEST_FILENAME} particle count mismatch for '{protein_name}': "
+                    f'expected {expected_count}, found {expected_local_start}.'
+                )
+
+            self.lmdb_reference_segments[protein_id] = normalized_segments
+            seen_protein_ids.add(protein_id)
+
+        expected_protein_ids = set(self.protein_id_dict.values())
+        if seen_protein_ids != expected_protein_ids:
+            missing_ids = sorted(expected_protein_ids - seen_protein_ids)
+            raise ValueError(
+                f"{LMDB_REFERENCE_MANIFEST_FILENAME} is missing proteins for ids: {missing_ids}."
+            )
+
+    def _get_protein_local_index(self, protein_id, item):
+        item_list = self.id_index_dict.get(protein_id, [])
+        local_index = bisect_left(item_list, item)
+        if local_index >= len(item_list) or item_list[local_index] != item:
+            raise IndexError(item)
+        return local_index
+
+    def _get_manifest_segment(self, protein_id, local_index):
+        segments = self.lmdb_reference_segments.get(protein_id)
+        if not segments:
+            raise ValueError(f'No LMDB reference segments found for protein id {protein_id}.')
+        for segment in segments:
+            start = segment['merged_local_start']
+            end = start + segment['count']
+            if start <= local_index < end:
+                return segment
+        raise IndexError(local_index)
 
     # def open_lmdb(self):
     #     # if mrcdata.lmdb_path is not None:
@@ -875,7 +1038,7 @@ class CryoEMDataset(Dataset):
 
         protein_id = self.protein_id_list[item]
         item_list = self.id_index_dict.get(protein_id, [])
-        min_id = self.cumulative_sizes[protein_id - 1] if protein_id > 0 else 0
+        min_id = self.protein_min_index.get(protein_id, min(item_list) if item_list else 0)
 
         nearest = None
         protein_name = self.protein_id_dict_reverse[protein_id]
@@ -929,7 +1092,32 @@ class CryoEMDataset(Dataset):
                 except EOFError:
                     print('error for path: ' + tif_path)
         elif item is not None:
-            if self.lmdb_path is not None:
+            if self.lmdb_reference_manifest is not None:
+                protein_id = self.protein_id_list[item]
+                local_index = self._get_protein_local_index(protein_id, item)
+                segment = self._get_manifest_segment(protein_id, local_index)
+                source_local_index = local_index - segment['merged_local_start']
+
+                raw_env, processed_env, _ = self._get_env(
+                    segment['processed_dir'],
+                    raw_dir=segment.get('raw_dir'),
+                    processed_dir=segment['processed_dir'],
+                    ft_dir=segment.get('ft_dir'),
+                    use_raw=self.pretrain_128,
+                )
+                lmdb_env = raw_env if self.pretrain_128 else processed_env
+                with lmdb_env.begin(write=False) as txn:
+                    key = f"{source_local_index}".encode()
+                    value = txn.get(key)
+                    if value is None:
+                        raise KeyError(
+                            f"Referenced LMDB {segment['processed_dir']} is missing expected key {source_local_index}."
+                        )
+                    data = pickle.loads(value)
+                    mrcdata = data
+                    tif_path = ''
+                del data, value
+            elif self.lmdb_path is not None:
                 # if not hasattr(self, 'lmdb_env'):
                 #     self.open_lmdb()
                 index = item
@@ -944,7 +1132,10 @@ class CryoEMDataset(Dataset):
                 local_idx = index - prev_size
 
                 # 3. 获取（可能需要懒加载）对应的LMDB环境
-                lmdb_env_r, lmdb_env_p, _ = self._get_env(lmdb_path, use_raw=self.pretrain_128)
+                lmdb_env_r, lmdb_env_p, _ = self._get_env(
+                    lmdb_path,
+                    use_raw=self.pretrain_128,
+                )
                 if self.pretrain_128:
                     lmdb_env = lmdb_env_r
                 else:
@@ -952,6 +1143,8 @@ class CryoEMDataset(Dataset):
                 with lmdb_env.begin(write=False) as txn:
                     key = f"{local_idx}".encode()
                     value = txn.get(key)
+                    if value is None:
+                        raise KeyError(f"LMDB {lmdb_path} is missing expected key {local_idx}.")
                     # data = torch.load(BytesIO(value),weights_only=False)
                     data = pickle.loads(value)
                     mrcdata = data
@@ -1035,7 +1228,7 @@ class CryoEMDataset(Dataset):
 
         return local_crops1, local_crops2
 
-    def _get_env(self, lmdb_path, use_raw=False, use_processed=True, use_FT=False):
+    def _get_env(self, lmdb_path, raw_dir=None, processed_dir=None, ft_dir=None, use_raw=False, use_processed=True, use_FT=False):
         """
         懒加载和缓存LMDB环境的辅助函数。
         """
@@ -1070,33 +1263,39 @@ class CryoEMDataset(Dataset):
                     env_FT.close()
                     self.env_FT.clear()
 
+        processed_env_key = processed_dir if processed_dir is not None else os.path.join(lmdb_path, 'lmdb_processed')
+        raw_env_key = raw_dir if raw_dir is not None else os.path.join(lmdb_path, 'lmdb_raw')
+        ft_env_key = ft_dir if ft_dir is not None else os.path.join(lmdb_path, 'lmdb_FT')
+
         # 检查缓存中是否已有此LMDB的环境
         # if lmdb_path not in self.open_envs:
         #     # 如果没有，就打开它并存入缓存
         #     # readonly=True, lock=False 对于多进程读取是安全且高效的
         #     env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False, meminit=False)
         #     self.open_envs[lmdb_path] = env
-        if os.path.join(lmdb_path, 'lmdb_processed') not in self.env_processed:
+        if use_processed and processed_env_key not in self.env_processed:
             # 如果没有，就打开它并存入缓存
             # readonly=True, lock=False 对于多进程读取是安全且高效的
-            if use_processed:
-                env_processed = lmdb.open(os.path.join(lmdb_path, 'lmdb_processed'), readonly=True, lock=False,
-                                          readahead=False, meminit=False)
-                self.env_processed[lmdb_path] = env_processed
+            env_processed = lmdb.open(processed_env_key, readonly=True, lock=False,
+                                      readahead=False, meminit=False)
+            self.env_processed[processed_env_key] = env_processed
 
-            if use_raw:
-                env_raw = lmdb.open(os.path.join(lmdb_path, 'lmdb_raw'), readonly=True, lock=False, readahead=False,
-                                    meminit=False)
-                self.env_raw[lmdb_path] = env_raw
+        if use_raw and raw_env_key not in self.env_raw:
+            env_raw = lmdb.open(raw_env_key, readonly=True, lock=False, readahead=False,
+                                meminit=False)
+            self.env_raw[raw_env_key] = env_raw
 
-            if use_FT:
-                env_FT = lmdb.open(os.path.join(lmdb_path, 'lmdb_FT'), readonly=True, lock=False, readahead=False,
-                                   meminit=False)
-                self.env_FT[lmdb_path] = env_FT
+        if use_FT and ft_env_key not in self.env_FT:
+            env_FT = lmdb.open(ft_env_key, readonly=True, lock=False, readahead=False,
+                               meminit=False)
+            self.env_FT[ft_env_key] = env_FT
 
         # return self.open_envs[lmdb_path]
-        return self.env_raw[lmdb_path] if use_raw else None, self.env_processed[lmdb_path], self.env_FT[
-            lmdb_path] if use_FT else None
+        return (
+            self.env_raw[raw_env_key] if use_raw else None,
+            self.env_processed[processed_env_key] if use_processed else None,
+            self.env_FT[ft_env_key] if use_FT else None,
+        )
 
 
 def listdir(path, list_name):  # 传入存储的list
