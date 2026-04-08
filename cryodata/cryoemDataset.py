@@ -1264,8 +1264,30 @@ class CryoEMDataset(Dataset):
                     self.env_FT.clear()
 
         processed_env_key = processed_dir if processed_dir is not None else os.path.join(lmdb_path, 'lmdb_processed')
-        raw_env_key = raw_dir if raw_dir is not None else os.path.join(lmdb_path, 'lmdb_raw')
-        ft_env_key = ft_dir if ft_dir is not None else os.path.join(lmdb_path, 'lmdb_FT')
+
+        if use_raw:
+            if raw_dir is not None:
+                raw_env_key = raw_dir
+            elif processed_dir is not None or ft_dir is not None:
+                raise ValueError(
+                    'LMDB reference manifest segment does not provide lmdb_raw for this protein segment.'
+                )
+            else:
+                raw_env_key = os.path.join(lmdb_path, 'lmdb_raw')
+        else:
+            raw_env_key = None
+
+        if use_FT:
+            if ft_dir is not None:
+                ft_env_key = ft_dir
+            elif processed_dir is not None or raw_dir is not None:
+                raise ValueError(
+                    'LMDB reference manifest segment does not provide lmdb_FT for this protein segment.'
+                )
+            else:
+                ft_env_key = os.path.join(lmdb_path, 'lmdb_FT')
+        else:
+            ft_env_key = None
 
         # 检查缓存中是否已有此LMDB的环境
         # if lmdb_path not in self.open_envs:
