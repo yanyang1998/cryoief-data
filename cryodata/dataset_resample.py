@@ -174,6 +174,26 @@ def _select_indices_with_score_source_ratios(index_list, sample_size, score_sour
     return [index_list[idx] for idx in selected_positions]
 
 
+def _ordered_union_ids(*dicts):
+    ordered_ids = []
+    seen_ids = set()
+    for mapping in dicts:
+        for item_id in mapping.keys():
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            ordered_ids.append(item_id)
+    return ordered_ids
+
+
+def _chunk_sequence_keep_remainder(items, chunk_size):
+    if len(items) == 0:
+        return []
+    if chunk_size is None or chunk_size <= 0:
+        return [list(items)]
+    return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size) if len(items[i:i + chunk_size]) > 0]
+
+
 class MyResampleSampler(Sampler):
     def __init__(self, data, id_index_dict_pos, id_index_dict_mid, id_index_dict_neg, resample_num_pos,
                  resample_num_neg, resample_num_mid,
@@ -814,117 +834,82 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
         shuffle_type = 'batch'
     else:
         per_batch_num = 0
+    bad_id_list_all = set(dataset_id_map.get('bad_id_list_all') or []) if dataset_id_map is not None else set()
+    dataset_ids = _ordered_union_ids(id_index_dict_pos, id_index_dict_neg, id_index_dict_mid)
+    resampled_dataset_groups = []
+    mix_up_list = []
+
+    for dataset_id in dataset_ids:
+        dataset_is_bad = dataset_id in bad_id_list_all
+        dataset_selected_indices = []
+        for bucket_dict, resample_num in (
+            (id_index_dict_pos, resample_num_p),
+            (id_index_dict_neg, resample_num_n),
+            (id_index_dict_mid, resample_num_mid),
+        ):
+            if dataset_id not in bucket_dict or resample_num is None or resample_num <= 0:
+                continue
+
+            max_number_per_sample_i = int(resample_num * 0.1) if (
+                dataset_is_bad and not only_mixup_bad_particles
+            ) else resample_num
+            if max_number_per_sample_i <= 0:
+                continue
+
+            selected_index_list, mix_up_list_added = get_index_per_class(
+                bucket_dict[dataset_id],
+                max_number_per_sample=max_number_per_sample_i,
+                shuffle_type=shuffle_type,
+                shuffle_mix_up_ratio=shuffle_mix_up_ratio,
+                is_bad_class=dataset_is_bad,
+                scores_bar=0.0,
+                balance_per_interval=balance_per_interval,
+                interval_list=index_list,
+                calculated_score_ratio=calculated_score_ratio,
+                missing_score_ratio=missing_score_ratio,
+            )
+
+            if only_mixup_bad_particles:
+                if dataset_is_bad:
+                    selected_index_list = []
+                else:
+                    mix_up_list_added = []
+
+            dataset_selected_indices.extend(selected_index_list)
+            mix_up_list.extend(mix_up_list_added)
+
+        if len(dataset_selected_indices) > 0:
+            if shuffle_type != 'batch' and shuffle_type != 'class':
+                random.shuffle(dataset_selected_indices)
+            resampled_dataset_groups.append(dataset_selected_indices)
+
+    if shuffle_type == 'batch' or shuffle_type == 'class':
+        random.shuffle(mix_up_list)
+        if len(resampled_dataset_groups) > 0:
+            step = len(mix_up_list) // len(resampled_dataset_groups)
+            for dataset_indices in resampled_dataset_groups:
+                if len(mix_up_list) >= step:
+                    dataset_indices.extend(mix_up_list[:step])
+                random.shuffle(dataset_indices)
+                if len(mix_up_list) >= step:
+                    mix_up_list = mix_up_list[step:]
+
     if shuffle_type == 'batch':
-        # id_index_dict_all = {**id_index_dict_pos, **id_index_dict_neg}
-        resampled_index_list_P = resample_from_id_index_dict(id_index_dict_pos,
-                                                             resample_num_p,
-                                                             batch_size_all,
-                                                             shuffle_type,
-                                                             shuffle_mix_up_ratio, my_seed,
-                                                             dataset_id_map=dataset_id_map,
-                                                             only_mixup_bad_particles=only_mixup_bad_particles,
-                                                             balance_per_interval=balance_per_interval,
-                                                             interval_list=index_list,
-                                                             per_batch_num=per_batch_num,
-                                                             calculated_score_ratio=calculated_score_ratio,
-                                                             missing_score_ratio=missing_score_ratio
-                                                             # error_balance=error_balance,
-                                                             # mean_error_dis_dict=mean_error_dis_dict,
-                                                             # data_error_dis_dict=data_error_dis_dict
-                                                             # positive_ratio=resample_num_p /(resample_num_p + resample_num_n)
-                                                             )
-        resampled_index_list_N = resample_from_id_index_dict(id_index_dict_neg,
-                                                             resample_num_n,
-                                                             batch_size_all,
-                                                             shuffle_type,
-                                                             shuffle_mix_up_ratio, my_seed,
-                                                             dataset_id_map=dataset_id_map,
-                                                             only_mixup_bad_particles=only_mixup_bad_particles,
-                                                             balance_per_interval=balance_per_interval,
-                                                             interval_list=index_list,
-                                                             per_batch_num=per_batch_num,
-                                                             calculated_score_ratio=calculated_score_ratio,
-                                                             missing_score_ratio=missing_score_ratio
-                                                             )
-        if len(id_index_dict_mid) > 0:
-            resampled_index_list_M = resample_from_id_index_dict(id_index_dict_mid, resample_num_mid,
-                                                                 batch_size_all, shuffle_type,
-                                                                 shuffle_mix_up_ratio, my_seed,
-                                                                 only_mixup_bad_particles=only_mixup_bad_particles,
-                                                                 balance_per_interval=balance_per_interval,
-                                                                 interval_list=index_list,
-                                                                 per_batch_num=per_batch_num,
-                                                                 calculated_score_ratio=calculated_score_ratio,
-                                                                 missing_score_ratio=missing_score_ratio
-                                                                 )
-            combined_resampled_index_list = [
-                (resampled_index_list_P[i] if len(resampled_index_list_P) > i else []) + (resampled_index_list_N[i] if len(
-                    resampled_index_list_N) > i else []) + (resampled_index_list_M[i] if len(
-                    resampled_index_list_M) > i else []) for i in
-                range(len(resampled_index_list_P))]
-            # combined_resampled_index_list = [
-            #     random.sample(combined_resampled_index_list[i], int(batch_size_all / per_batch_num)) if int(
-            #         batch_size_all / per_batch_num) < len(combined_resampled_index_list[i]) else [] for i in
-            #     range(len(resampled_index_list_P))]
-        else:
-            # combined_resampled_index_list = [random.sample(resampled_index_list_P[i] + resampled_index_list_N[i],
-            #                                                int(batch_size_all / per_batch_num)) for i in
-            #                                  range(len(resampled_index_list_P))]
+        chunk_size = int(batch_size_all / per_batch_num) if per_batch_num > 0 else batch_size_all
+        batched_dataset_indices = []
+        for dataset_indices in resampled_dataset_groups:
+            batched_dataset_indices.extend(
+                _chunk_sequence_keep_remainder(dataset_indices, chunk_size)
+            )
+        random.shuffle(batched_dataset_indices)
+        return [item for sublist in batched_dataset_indices for item in sublist]
 
-            combined_resampled_index_list = [
-                (resampled_index_list_P[i] if len(resampled_index_list_P)>i else []) + (resampled_index_list_N[i] if len(resampled_index_list_N)>i else []) for i in
-                range(len(resampled_index_list_P))]
-        combined_resampled_index_list = [
-            random.sample(combined_resampled_index_list[i], int(batch_size_all / per_batch_num)) if int(
-                batch_size_all / per_batch_num) <= len(combined_resampled_index_list[i]) else [] for i in
-            range(len(resampled_index_list_P))]
-        random.shuffle(combined_resampled_index_list)
-        resampled_index_list = [item for sublist in combined_resampled_index_list for item in sublist]
+    if shuffle_type == 'class':
+        random.shuffle(resampled_dataset_groups)
 
-    else:
-        resampled_index_list = []
-        resampled_index_list.extend(
-            resample_from_id_index_dict(id_index_dict_pos, resample_num_p,
-                                        batch_size_all,
-                                        shuffle_type,
-                                        shuffle_mix_up_ratio, my_seed,
-                                        only_mixup_bad_particles=only_mixup_bad_particles,
-                                        balance_per_interval=balance_per_interval,
-                                        interval_list=index_list,
-                                        calculated_score_ratio=calculated_score_ratio,
-                                        missing_score_ratio=missing_score_ratio
-                                        # error_balance=error_balance,
-                                        # mean_error_dis_dict=mean_error_dis_dict,
-                                        # data_error_dis_dict=data_error_dis_dict['good']
-                                        ))
-        resampled_index_list.extend(
-            resample_from_id_index_dict(id_index_dict_neg, resample_num_n,
-                                        batch_size_all,
-                                        shuffle_type,
-                                        shuffle_mix_up_ratio, my_seed,
-                                        only_mixup_bad_particles=only_mixup_bad_particles,
-                                        balance_per_interval=balance_per_interval,
-                                        interval_list=index_list,
-                                        calculated_score_ratio=calculated_score_ratio,
-                                        missing_score_ratio=missing_score_ratio
-                                        # error_balance=error_balance,
-                                        # mean_error_dis_dict=mean_error_dis_dict,
-                                        # data_error_dis_dict=data_error_dis_dict['bad']
-                                        ))
-        if len(id_index_dict_mid) > 0:
-            resampled_index_list.extend(
-                resample_from_id_index_dict(id_index_dict_mid, resample_num_mid, batch_size_all, shuffle_type,
-                                            shuffle_mix_up_ratio, my_seed,
-                                            only_mixup_bad_particles=only_mixup_bad_particles,
-                                            balance_per_interval=balance_per_interval,
-                                            interval_list=index_list,
-                                            calculated_score_ratio=calculated_score_ratio,
-                                            missing_score_ratio=missing_score_ratio
-                                            # error_balance=error_balance, mean_error_dis_dict=mean_error_dis_dict,
-                                            # data_error_dis_dict=data_error_dis_dict['mid']
-                                            ))
-        if shuffle_type == 'all':
-            random.shuffle(resampled_index_list)
+    resampled_index_list = [item for sublist in resampled_dataset_groups for item in sublist]
+    if shuffle_type == 'all':
+        random.shuffle(resampled_index_list)
     return resampled_index_list
 
 
