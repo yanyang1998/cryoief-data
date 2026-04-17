@@ -926,7 +926,10 @@ class CryoEMDataset(Dataset):
                                                      is_mics=is_mics)
         else:
             # 接收返回的 rotate image
-            aug1, mrcdata_rotate1 = self.mrcdata_aug(mrcdata)
+            if is_mics:
+                if self.mic_crop is not None:
+                    mrcdata = self.mic_crop(mrcdata)
+            aug1, mrcdata_rotate1 = self.mrcdata_aug(mrcdata,is_mics=is_mics)
             aug2 = None
             mrcdata_rotate2 = None
 

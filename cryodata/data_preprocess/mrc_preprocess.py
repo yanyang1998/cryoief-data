@@ -15,13 +15,60 @@ from scipy.ndimage import zoom
 # Default worker count for multiprocessing pools
 DEFAULT_WORKER_PROCESSES = 12
 
-def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000, window=False, window_r=0.85,needs_FT=False):
+def _estimate_processed_sample_bytes(np_image_raw_sampled, resize, is_to_int8):
+    """Estimate serialized LMDB payload size for processed particles."""
+    if np_image_raw_sampled.size == 0:
+        return 0.0
+
+    processed_sample = np_image_raw_sampled
+    if resize is not None and processed_sample.shape[-1] != resize:
+        processed_sample = mrcs_resize(processed_sample, resize, resize)
+    if is_to_int8:
+        processed_sample = mrcs_to_int8(processed_sample)
+
+    serialized_sizes = [
+        len(pickle.dumps(Image.fromarray(processed_sample[i]).convert('L'), protocol=pickle.HIGHEST_PROTOCOL))
+        for i in range(processed_sample.shape[0])
+    ]
+    return float(np.mean(serialized_sizes)) if serialized_sizes else 0.0
+
+
+def estimate_processed_map_size(path_list, bytes_per_particle, safety_factor=1.35,
+                                overhead_bytes=64 * 1024 * 1024,
+                                min_map_size_bytes=512 * 1024 * 1024):
+    """Estimate LMDB map_size from exact stack counts and sampled serialized payload size."""
+    total_particles = 0
+    for path in path_list:
+        try:
+            total_particles += int(mrc.parse_header(path).fields['nz'])
+        except Exception:
+            arr, _ = mrc.parse_mrc(path)
+            total_particles += int(arr.shape[0])
+
+    if total_particles == 0:
+        return min_map_size_bytes
+
+    fallback_particle_bytes = 1024.0
+    if bytes_per_particle <= 0:
+        bytes_per_particle = fallback_particle_bytes
+
+    estimated_size = int(total_particles * bytes_per_particle * safety_factor + overhead_bytes)
+    return max(estimated_size, min_map_size_bytes)
+
+
+def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000, window=False, window_r=0.85,
+                        needs_FT=False, resize=None, is_to_int8=True, return_stats=False):
+    if not path_list:
+        if return_stats:
+            return {'mean_imgs_len': 0.0, 'processed_bytes_per_particle': 0.0}
+        return 0.0
     if num_stacks > len(path_list):
         num_stacks = len(path_list)
     path_sampled = random.sample(path_list, num_stacks)
     np_image_raw_all = []
     np_image_FT_all = []
     imgs_len_all = []
+    processed_sample_bytes = []
     select_num_per_stack = num_particles // num_stacks
 
     for i in range(num_stacks):
@@ -52,6 +99,11 @@ def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000
             np_image_FT_all.append(np_image_FT_sampled)
         # np_image_raw_sampled = np.asarray(imgs, dtype=np.float32)
 
+        if return_stats:
+            processed_sample_bytes.append(
+                _estimate_processed_sample_bytes(np_image_raw_sampled, resize=resize, is_to_int8=is_to_int8)
+            )
+
         np_image_raw_all.append(np_image_raw_sampled)
         imgs_len_all.append(imgs_len)
     np_image_raw_all = np.concatenate(np_image_raw_all, axis=0)
@@ -78,6 +130,11 @@ def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000
     with open(os.path.join(save_path, 'img_dim.data'), 'wb') as filehandle:
         pickle.dump(img_dim, filehandle)
     # return (means_raw, std_raw), (means_FT, std_FT), mean_imgs_len
+    if return_stats:
+        return {
+            'mean_imgs_len': float(mean_imgs_len),
+            'processed_bytes_per_particle': float(np.mean(processed_sample_bytes)) if processed_sample_bytes else 0.0,
+        }
     return mean_imgs_len
 
 
@@ -473,6 +530,8 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         indeices_per_mrcs_dict = None
         # mrcs_names_list_process=mrc_list
         new_cs_data = None
+        # all files end with .mrcs or .mrc in mrc_dir
+        mrcs_names_list_process = [filename for filename in os.listdir(mrc_dir) if filename.endswith('.mrcs') or filename.endswith('.mrc')]
 
     if use_lmdb:
         # tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',mrc_dir.split('/')[-2] if isinstance(mrc_dir,str) else mrc_dir[0].split('/')[-2])
@@ -488,14 +547,25 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
             else:
                 image_path_list = [os.path.join(dir, mrcs_name) for mrcs_name,dir in zip(mrcs_names_list_process,mrc_dir)]
 
-            mean_len = sample_and_evaluate(image_path_list, tmp_data_save_path)
+            sample_stats = sample_and_evaluate(
+                image_path_list,
+                tmp_data_save_path,
+                resize=resize,
+                is_to_int8=True,
+                return_stats=True,
+            )
 
-            # map_size = int(80 * 1024 * len(image_path_list) * 6)
-            map_size = {'processed':int(80 * 1024 * len(image_path_list) * mean_len * 4)}
+            # Estimate LMDB capacity from sampled serialized item size and exact stack counts.
+            map_size = {
+                'processed': estimate_processed_map_size(
+                    image_path_list,
+                    sample_stats['processed_bytes_per_particle'],
+                )
+            }
 
             # 创建 LMDB 数据库
             create_lmdb_dataset(image_path_list, tmp_data_save_path, num_processes=num_processes,
-                                map_size=map_size, window=False, generate_ft_data=False,
+                                map_size=map_size, window=False, generate_ft_data=False,resize=resize,
                                 save_raw_data=False)
 
     else:
