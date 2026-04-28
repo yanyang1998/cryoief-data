@@ -1176,6 +1176,7 @@ class CryoEMDataset(Dataset):
         # # if mrcdata.mode != 'L':
         #     mrcdata = to_int8(mrcdata)
         mrcdata_rotate1 = mrcdata
+        aug=mrcdata
         if is_mics:
             if self.mic_transform is not None:
                 aug = self.mic_transform(mrcdata)
@@ -1190,27 +1191,36 @@ class CryoEMDataset(Dataset):
 
             # 2. 生成 Global View (aug)
             if is_mix_pos:
-                aug = self.transform_mix_pos(mrcdata_rotate1)
-            else:
+                if self.transform_mix_pos is not None:
+                    aug = self.transform_mix_pos(mrcdata_rotate1)
+            elif self.transform is not None:
                 aug = self.transform(mrcdata_rotate1)
 
             # 修改点：同时返回 最终aug tensor 和 中间状态的 rotate image
         return aug, mrcdata_rotate1
 
     def get_transforms(self, transforms, transforms_list_mix_pos=None):
-        self.transform = transforms['ptcls'] if 'ptcls' in transforms else None
-        self.local_crops_transform = transforms['local_crops'] if 'local_crops' in transforms else None
-        self.random_rotate_transform = transforms['random_rotate'] if 'random_rotate' in transforms else None
-        self.mic_transform = transforms['mics'] if 'mics' in transforms else None
-        self.mic_crop= transforms['random_resized_crop_all'] if 'random_resized_crop_all' in transforms else None
-        if transforms_list_mix_pos is not None:
-            # self.mix_pos_transforms = transforms_list_mix_pos
-            self.random_rotate_transform_mix_pos = transforms['random_rotate'] if 'random_rotate' in transforms else None
-            self.transform_mix_pos = transforms['ptcls'] if 'ptcls' in transforms else None
+        if transforms is None:
+            self.transform = None
+            self.local_crops_transform = None
+            self.random_rotate_transform = None
+            self.mic_transform = None
+            self.mic_crop = None
+            self.random_rotate_transform_mix_pos = None 
         else:
-            self.mix_pos_transforms = None
-            self.random_rotate_transform_mix_pos = None
-            self.transform_mix_pos = None
+            self.transform = transforms['ptcls'] if 'ptcls' in transforms else None
+            self.local_crops_transform = transforms['local_crops'] if 'local_crops' in transforms else None
+            self.random_rotate_transform = transforms['random_rotate'] if 'random_rotate' in transforms else None
+            self.mic_transform = transforms['mics'] if 'mics' in transforms else None
+            self.mic_crop= transforms['random_resized_crop_all'] if 'random_resized_crop_all' in transforms else None
+            if transforms_list_mix_pos is not None:
+                # self.mix_pos_transforms = transforms_list_mix_pos
+                self.random_rotate_transform_mix_pos = transforms['random_rotate'] if 'random_rotate' in transforms else None
+                self.transform_mix_pos = transforms['ptcls'] if 'ptcls' in transforms else None
+            else:
+                self.mix_pos_transforms = None
+                self.random_rotate_transform_mix_pos = None
+                self.transform_mix_pos = None
 
     def get_local_crops(self, mrcdata_rotate1, mrcdata_rotate2=None):
         local_crops1 = []

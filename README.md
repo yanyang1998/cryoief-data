@@ -55,7 +55,11 @@ new_cs_data = raw_data_preprocess(
 meta_data = CryoMetaData(processed_data_path=processed_data_path)
 cryodataset = CryoEMDataset(metadata=meta_data)
 
-# Step 3: Create a DataLoader for training
+# Step 3: Set up data augmentation transforms
+base_transforms ={'ptcls': transforms.Compose([transforms.ToTensor()])}
+cryodataset.get_transforms(transforms=base_transforms)
+
+# Step 4: Create a DataLoader for training
 dataloader = torch.utils.data.DataLoader(cryodataset, batch_size=32, shuffle=True)
 ```
 
