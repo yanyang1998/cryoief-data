@@ -36,6 +36,7 @@ pip install -e .
 ```python
 from cryodata.data_preprocess.mrc_preprocess import raw_data_preprocess
 from cryodata.cryoemDataset import CryoEMDataset, CryoMetaData
+import torchvision.transforms as transforms
 import torch
 
 raw_data_path = 'path/to/cryosparc/particles/job'
