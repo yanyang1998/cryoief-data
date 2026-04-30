@@ -801,11 +801,29 @@ class CryoEMDataset(Dataset):
                     )
 
                 entry_count = self._get_lmdb_entry_count(processed_dir)
-                if entry_count != count:
-                    raise ValueError(
-                        f"Referenced LMDB count mismatch for '{protein_name}' at {processed_dir}: "
-                        f'expected {count}, found {entry_count}.'
-                    )
+                source_local_indices = segment.get('source_local_indices')
+                if source_local_indices is None:
+                    if entry_count != count:
+                        raise ValueError(
+                            f"Referenced LMDB count mismatch for '{protein_name}' at {processed_dir}: "
+                            f'expected {count}, found {entry_count}.'
+                        )
+                else:
+                    if not isinstance(source_local_indices, list) or len(source_local_indices) != count:
+                        raise ValueError(
+                            f"{LMDB_REFERENCE_MANIFEST_FILENAME} source_local_indices length mismatch "
+                            f"for '{protein_name}'."
+                        )
+                    normalized_source_indices = []
+                    for source_index in source_local_indices:
+                        source_index = int(source_index)
+                        if source_index < 0 or source_index >= entry_count:
+                            raise ValueError(
+                                f"{LMDB_REFERENCE_MANIFEST_FILENAME} source index {source_index} "
+                                f"for '{protein_name}' is outside referenced LMDB entry count {entry_count}."
+                            )
+                        normalized_source_indices.append(source_index)
+                    source_local_indices = normalized_source_indices
 
                 normalized_segments.append(
                     {
@@ -814,6 +832,7 @@ class CryoEMDataset(Dataset):
                         'processed_dir': processed_dir,
                         'raw_dir': raw_dir,
                         'ft_dir': ft_dir,
+                        'source_local_indices': source_local_indices,
                     }
                 )
                 expected_local_start += count
@@ -1099,7 +1118,11 @@ class CryoEMDataset(Dataset):
                 protein_id = self.protein_id_list[item]
                 local_index = self._get_protein_local_index(protein_id, item)
                 segment = self._get_manifest_segment(protein_id, local_index)
-                source_local_index = local_index - segment['merged_local_start']
+                segment_local_index = local_index - segment['merged_local_start']
+                if segment.get('source_local_indices') is None:
+                    source_local_index = segment_local_index
+                else:
+                    source_local_index = segment['source_local_indices'][segment_local_index]
 
                 raw_env, processed_env, _ = self._get_env(
                     segment['processed_dir'],
