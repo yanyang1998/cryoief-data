@@ -246,8 +246,11 @@ def lmdb_process_item(args):
         path_id_my_data = []
         for i in range(n_total):
             if generate_processed_data:
-                img_pil = Image.fromarray(np_image_processed[i]).convert('L')
-                processed_data_by_type['processed'].append(pickle.dumps(img_pil, protocol=pickle.HIGHEST_PROTOCOL))
+                if is_to_int8:
+                    payload = Image.fromarray(np_image_processed[i]).convert('L')
+                else:
+                    payload = np.asarray(np_image_processed[i], dtype=np.float32)
+                processed_data_by_type['processed'].append(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
             if save_raw_data:
                 processed_data_by_type['raw'].append(
                     pickle.dumps(np_image_raw_processed[i], protocol=pickle.HIGHEST_PROTOCOL))

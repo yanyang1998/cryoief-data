@@ -26,10 +26,13 @@ def _estimate_processed_sample_bytes(np_image_raw_sampled, resize, is_to_int8):
     if is_to_int8:
         processed_sample = mrcs_to_int8(processed_sample)
 
-    serialized_sizes = [
-        len(pickle.dumps(Image.fromarray(processed_sample[i]).convert('L'), protocol=pickle.HIGHEST_PROTOCOL))
-        for i in range(processed_sample.shape[0])
-    ]
+    serialized_sizes = []
+    for i in range(processed_sample.shape[0]):
+        if is_to_int8:
+            payload = Image.fromarray(processed_sample[i]).convert('L')
+        else:
+            payload = np.asarray(processed_sample[i], dtype=np.float32)
+        serialized_sizes.append(len(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)))
     return float(np.mean(serialized_sizes)) if serialized_sizes else 0.0
 
 
@@ -448,7 +451,10 @@ def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_
         if not os.path.exists(os.path.join(processed_dataset_save_dir, name)):
             os.makedirs(os.path.join(processed_dataset_save_dir, name))
         with open(os.path.join(processed_dataset_save_dir, name, n + '.data'), 'wb') as filehandle:
-            pickle.dump(Image.fromarray(processed_mrcs[j]).convert('L'), filehandle)
+            if is_to_int8:
+                pickle.dump(Image.fromarray(processed_mrcs[j]).convert('L'), filehandle)
+            else:
+                pickle.dump(np.asarray(processed_mrcs[j], dtype=np.float32), filehandle)
 
         processed_single_particle_path.append(os.path.join(processed_dataset_save_dir, name, n + '.data'))
 
@@ -551,7 +557,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
                 image_path_list,
                 tmp_data_save_path,
                 resize=resize,
-                is_to_int8=True,
+                is_to_int8=is_to_int8,
                 return_stats=True,
             )
 
@@ -565,7 +571,8 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
 
             # 创建 LMDB 数据库
             create_lmdb_dataset(image_path_list, tmp_data_save_path, num_processes=num_processes,
-                                map_size=map_size, window=False, generate_ft_data=False,resize=resize,
+                                map_size=map_size, window=False, generate_ft_data=False, resize=resize,
+                                is_to_int8=is_to_int8,
                                 save_raw_data=False)
 
     else:
