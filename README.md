@@ -15,6 +15,7 @@ Cryo-EM data processing tools for deep learning. This package provides a full pi
 - **LMDB dataset creation** — fast multi-process conversion of MRC stacks into LMDB databases for efficient training I/O
 - **PyTorch dataset & sampler** — `CryoEMDataset` and `CryoMetaData` classes with support for balanced resampling
 - **Fourier-space representations** — optional FFT/Hilbert-transform outputs alongside real-space images
+- **Online MRCS export** — write dataloader-generated particles back to `.mrcs` stacks with aligned `.cs` and `.star` metadata
 - **Format conversion** — convert cryoSPARC `.cs` files to RELION `.star` format
 
 ## Installation
@@ -196,6 +197,43 @@ Estimates dataset statistics by randomly sampling MRC stacks. Saves `means_stds_
 | `window` | `bool` | `False` | Apply a radial window mask before computing statistics |
 | `window_r` | `float` | `0.85` | Inner radius for the window mask |
 | `needs_FT` | `bool` | `False` | Also compute and save Hartley-transform statistics |
+
+---
+
+#### `CryoMRCSSaver`
+
+```python
+from cryodata.data_preprocess.mrcs_export import CryoMRCSSaver
+
+with CryoMRCSSaver(
+    save_path='path/to/exported_particles',
+    particles_per_mrcs_file=1000,
+    reference_cs_path='path/to/reference/new_particles.cs',
+    dataset_transform=cryodataset.transform,
+    orig_min=-5.0,
+    orig_max=5.0,
+) as saver:
+    for batch in dataloader:
+        saver.write_batch(batch['aug1'], batch['item'])
+```
+
+Online exporter for saving dataloader-produced cryo-EM particles back to `.mrcs` stacks. The saver writes particles incrementally and closes each `.mrcs` file as soon as `particles_per_mrcs_file` is reached. After all batches are written, `close()` saves `generated_particles.cs` and `generated_particles.star` in the export root.
+
+When `reference_cs_path` is provided, metadata rows are copied from the reference `.cs` using `batch['item']`, so CTF and alignment metadata stay one-to-one with exported particles even when the dataloader is shuffled. The saver updates `blob/path`, `blob/idx`, `blob/shape`, `blob/psize_A`, and alignment pixel-size/shift fields when present.
+
+Input images should be single-channel tensors with shape `(B, 1, H, W)` or `(B, H, W)`. If the dataset transform contains `transforms.Normalize`, the saver reverses it before converting `[0, 1]` values back to approximate MRC-space values using `orig_min` and `orig_max`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `save_path` | `str` or `Path` | — | Root directory for `.mrcs`, `.cs`, and `.star` outputs |
+| `particles_per_mrcs_file` | `int` | — | Maximum number of particles per output `.mrcs` stack |
+| `reference_cs_path` | `str` or `Path` | `None` | Reference cryoSPARC `.cs` file used to copy per-particle metadata |
+| `orig_min` | `float` | `-5.0` | Minimum value used to map normalized image values back to MRC-space |
+| `orig_max` | `float` | `5.0` | Maximum value used to map normalized image values back to MRC-space |
+| `dataset_transform` | transform | `None` | Transform pipeline used by the dataset; any `Normalize` step is inverted |
+| `normalize_mean` | `float` or sequence | `None` | Explicit single-channel normalization mean, used with `normalize_std` |
+| `normalize_std` | `float` or sequence | `None` | Explicit single-channel normalization std, used with `normalize_mean` |
+| `output_prefix` | `str` | `'generated_particles'` | Prefix for output files |
 
 ---
 
