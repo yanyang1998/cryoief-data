@@ -11,7 +11,7 @@ def cs2star(input, output, minphic=None, boxsize=None, noswapxy=False, invertx=F
         cs = np.load(input[0])
         try:
             df = metadata.parse_cryosparc_2_cs(cs, passthroughs=input[1:], minphic=minphic,
-                                               boxsize=boxsize, swapxy=noswapxy,
+                                               boxsize=boxsize, swapxy=not noswapxy,
                                                invertx=invertx, inverty=inverty)
         except (KeyError, ValueError):
             return 1

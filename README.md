@@ -78,6 +78,7 @@ new_cs_data = raw_data_preprocess(
     resize=224,
     is_to_int8=True,
     num_processes=8,
+    chunksize=1,
 )
 ```
 
@@ -89,7 +90,8 @@ The main entry point for the preprocessing pipeline. Reads cryoSPARC `.cs` metad
 | `dataset_save_dir` | `str` | — | Directory where processed data and metadata will be saved |
 | `resize` | `int` | `224` | Target image size in pixels (square); uses FFT-based downsampling when reducing, bicubic otherwise |
 | `is_to_int8` | `bool` | `True` | Normalize each particle to [0, 255] and cast to `uint8` for compact storage |
-| `num_processes` | `int` | `8` | Number of worker processes for parallel MRC file processing |
+| `num_processes` | `int` | `8` | Number of worker processes for LMDB conversion |
+| `chunksize` | `int` | `0` | Multiprocessing chunk size for LMDB conversion; `0` uses a chunk size of `1` |
 
 ---
 
@@ -98,10 +100,18 @@ The main entry point for the preprocessing pipeline. Reads cryoSPARC `.cs` metad
 ```python
 from cryodata.data_preprocess.mrc_preprocess import raw_csdata_process_from_cryosparc_dir
 
-cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(raw_data_path)
+cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(
+    raw_data_path,
+    processed_cs_path=None,
+)
 ```
 
 Scans a cryoSPARC job directory and locates the relevant `.cs` particle file and the corresponding MRC stack directory. Handles various cryoSPARC job types (extraction, import, restack, downsampling). When both a particles `.cs` file and a passthrough file are found, they are merged via an inner join. Returns the `Dataset` object and the path (or list of paths) to the MRC stacks.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `raw_data_path` | `str` | — | Path to a cryoSPARC job directory or a `.cs` file inside one |
+| `processed_cs_path` | `str` | `None` | Optional path to an already processed `.cs` file to load instead of rebuilding `new_particles.cs` |
 
 ---
 
@@ -118,9 +128,9 @@ Resizes a 2D image or a batch of images. Accepts a NumPy array or a PIL `Image`.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mrcs` | `np.ndarray` or `PIL.Image` | — | Single image `(H, W)` or image stack `(N, H, W)` |
-| `width` | `int` | — | Target width (and height, if `height` is not given) in pixels |
+| `width` | `int` | — | Target width in pixels |
 | `height` | `int` | `None` | Target height; defaults to `width` for square output |
-| `is_freqs` | `bool` | `True` | When `True` and target is smaller than source, downsample in the Fourier domain (FFT crop); otherwise use bicubic spatial interpolation |
+| `is_freqs` | `bool` | `True` | When `True` and both input and output are square downsampling operations, resize in the Fourier domain (FFT crop); otherwise use bicubic spatial interpolation |
 
 ---
 
@@ -156,7 +166,7 @@ from cryodata.data_preprocess.mrc_preprocess import window_mask
 mask = window_mask(resolution, in_rad, out_rad=0.99)
 ```
 
-Generates a 2D radial cosine-edge windowing mask of shape `(resolution, resolution)`. The mask is 1.0 inside `in_rad` and tapers smoothly to 0.0 at `out_rad`. Useful for suppressing edge artifacts before computing FFTs.
+Generates a 2D radial linear-taper windowing mask of shape `(resolution, resolution)`. The mask is 1.0 inside `in_rad` and tapers linearly to 0.0 at `out_rad`. Useful for suppressing edge artifacts before computing FFTs.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -175,6 +185,7 @@ mean_len = sample_and_evaluate(
     path_list, save_path,
     num_stacks=50, num_particles=20000,
     window=False, window_r=0.85, needs_FT=False,
+    resize=None, is_to_int8=True, return_stats=False,
 )
 ```
 
@@ -189,6 +200,9 @@ Estimates dataset statistics by randomly sampling MRC stacks. Saves `means_stds_
 | `window` | `bool` | `False` | Apply a radial window mask before computing statistics |
 | `window_r` | `float` | `0.85` | Inner radius for the window mask |
 | `needs_FT` | `bool` | `False` | Also compute and save Hartley-transform statistics |
+| `resize` | `int` | `None` | Optional processed image size used when estimating serialized LMDB particle size |
+| `is_to_int8` | `bool` | `True` | Whether the processed-size estimate should model `uint8` storage |
+| `return_stats` | `bool` | `False` | Return a statistics dictionary instead of only `mean_imgs_len` |
 
 ---
 
@@ -209,7 +223,7 @@ with CryoMRCSSaver(
         saver.write_batch(batch['aug1'], batch['item'])
 ```
 
-Online exporter for saving dataloader-produced cryo-EM particles back to `.mrcs` stacks. The saver writes particles incrementally and closes each `.mrcs` file as soon as `particles_per_mrcs_file` is reached. After all batches are written, `close()` saves `generated_particles.cs` and `generated_particles.star` in the export root.
+Online exporter for saving dataloader-produced cryo-EM particles back to `.mrcs` stacks. The saver writes particles incrementally and closes each `.mrcs` file as soon as `particles_per_mrcs_file` is reached. When `reference_cs_path` is provided and at least one particle is written, `close()` saves `generated_particles.cs` and `generated_particles.star` in the export root.
 
 When `reference_cs_path` is provided, metadata rows are copied from the reference `.cs` using `batch['item']`, so CTF and alignment metadata stay one-to-one with exported particles even when the dataloader is shuffled. The saver updates `blob/path`, `blob/idx`, `blob/shape`, `blob/psize_A`, and alignment pixel-size/shift fields when present.
 
@@ -262,7 +276,7 @@ dataset = CryoEMDataset(metadata=meta_data)
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
 ```
 
-A `torch.utils.data.Dataset` that loads preprocessed cryo-EM particles from an LMDB database. Images larger than 384 pixels are treated as micrographs; smaller images are treated as particles. Supports optional on-the-fly transforms passed at construction time.
+A `torch.utils.data.Dataset` that loads preprocessed cryo-EM particles from an LMDB database. Images larger than 384 pixels are treated as micrographs; smaller images are treated as particles. A single particle transform can be passed as `CryoEMDataset(metadata, transform=...)`; use `get_transforms({'ptcls': ..., 'mics': ...})` when routing separate transforms by data source.
 
 ---
 
@@ -290,7 +304,7 @@ Converts a cryoSPARC `.cs` file to a RELION-compatible STAR file. When multiple 
 | `output` | `str` | — | Path for the output `.star` file |
 | `minphic` | `float` | `None` | Minimum posterior probability threshold for class assignment |
 | `boxsize` | `int` | `None` | Override particle box size in the output |
-| `noswapxy` | `bool` | `False` | Disable the default X/Y coordinate swap |
+| `noswapxy` | `bool` | `False` | Disable the default X/Y coordinate swap when converting normalized particle coordinates |
 | `invertx` | `bool` | `False` | Invert X coordinates |
 | `inverty` | `bool` | `False` | Invert Y coordinates |
 

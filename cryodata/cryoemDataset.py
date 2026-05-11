@@ -695,6 +695,13 @@ class CryoEMDataset(Dataset):
         # self.mean_std = mrcdata.means_stds
         self.normal_scale = normal_scale
         self.transform = transform
+        self.local_crops_transform = None
+        self.random_rotate_transform = None
+        self.mic_transform = None
+        self.mic_crop = None
+        self.mix_pos_transforms = None
+        self.random_rotate_transform_mix_pos = None
+        self.transform_mix_pos = None
         self.accelerator = accelerator
         # self.train=True
 
@@ -1193,7 +1200,9 @@ class CryoEMDataset(Dataset):
             self.random_rotate_transform = None
             self.mic_transform = None
             self.mic_crop = None
+            self.mix_pos_transforms = None
             self.random_rotate_transform_mix_pos = None 
+            self.transform_mix_pos = None
         else:
             self.transform = transforms['ptcls'] if 'ptcls' in transforms else None
             self.local_crops_transform = transforms['local_crops'] if 'local_crops' in transforms else None

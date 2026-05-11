@@ -146,6 +146,8 @@ def mrcs_resize(mrcs, width, height=None, is_freqs=True):
     若在频域下采样，则保持原逻辑。
     若在图像域下采样，则调用优化后的 `downsample_Image`。
     """
+    if height is None:
+        height = width
     if isinstance(mrcs,Image.Image):
         mrcs_np = np.array(mrcs)
     elif isinstance(mrcs,np.ndarray):
@@ -153,12 +155,18 @@ def mrcs_resize(mrcs, width, height=None, is_freqs=True):
     else:
         mrcs_np = np.array(mrcs).astype(np.float32)
 
-    if is_freqs and width < mrcs_np.shape[-1]:
+    use_freq_resize = (
+        is_freqs
+        and width == height
+        and mrcs_np.shape[-1] == mrcs_np.shape[-2]
+        and width < mrcs_np.shape[-1]
+    )
+    if use_freq_resize:
         # 频域下采样逻辑保持不变，它已经是基于FFT的向量化操作
         resized_mrcs = downsample_freq(mrcs_np, width)
     else:
         # 图像域下采样，调用新的高效函数
-        resized_mrcs = downsample_Image(mrcs_np, width)
+        resized_mrcs = downsample_Image(mrcs_np, (height, width))
     if mrcs_np.ndim == 2 and resized_mrcs.ndim == 3:
         resized_mrcs =np.squeeze(resized_mrcs, axis=0)
     if isinstance(mrcs,Image.Image):
@@ -190,11 +198,15 @@ def downsample_Image(imgs, resolution_out):
     if imgs.ndim == 2:
         imgs = imgs[np.newaxis, :, :]
     N, H, W = imgs.shape
-    if H == resolution_out and W == resolution_out:
+    if isinstance(resolution_out, (tuple, list)):
+        height_out, width_out = resolution_out
+    else:
+        height_out = width_out = resolution_out
+    if H == height_out and W == width_out:
         return imgs.astype('float32')
 
     # 计算缩放因子，批次维度(N)不缩放
-    zoom_factors = (1, resolution_out / H, resolution_out / W)
+    zoom_factors = (1, height_out / H, width_out / W)
 
     # order=3 对应双三次插值 (Bicubic)，与原PIL实现类似
     resized_imgs = zoom(imgs, zoom_factors, order=3)
@@ -273,7 +285,7 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
             other_cs_path = os.path.join(raw_data_path, filename)
 
     if processed_cs_path is not None and os.path.exists(processed_cs_path):
-        cs_data = Dataset.load(new_csdata_path)
+        cs_data = Dataset.load(processed_cs_path)
     else:
         if not os.path.exists(new_csdata_path):
             if passthrough_particles_path is not None:
