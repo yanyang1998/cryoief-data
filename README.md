@@ -213,6 +213,8 @@ Loads and stores all metadata for a preprocessed cryo-EM dataset. Automatically 
 
 If the processed dataset contains `labels_score_source.data`, CryoIEF loads it as the primary per-particle provenance label with `0=calculated score`, `1=_good/_bad default score`, and `2=missing score in a non-_good/_bad dataset`. For backward compatibility, older processed datasets that only contain `labels_used_default_score.data` are still supported by synthesizing `labels_score_source` as `0` for calculated labels and `1` for default/imputed labels. The legacy in-memory `labels_used_default_score` view is still exposed and is derived from `labels_score_source` with `0 -> 0` and `{1,2} -> 1`.
 
+<!-- If the processed dataset contains `labels_data_source.data`, CryoIEF loads it as the per-particle source-modality label. Supported string values are `ptcls`, `mics`, `et_tilts`, and `et_ptcls`. Older datasets without this file are treated as `ptcls`. -->
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `processed_data_path` | `str` | — | Path to the directory produced by `raw_data_preprocess` |

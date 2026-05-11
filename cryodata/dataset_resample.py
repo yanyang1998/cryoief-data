@@ -8,6 +8,22 @@ import numpy as np
 MICS_BATCH_DIVISOR_INIT = 10
 MICS_BATCH_DIVISOR_ITER = 8
 
+MEASURED_SCORE_SOURCE = 0
+DEFAULT_GOOD_BAD_SCORE_SOURCE = 1
+FALLBACK_DEFAULT_SCORE_SOURCE = 2
+SNR_REFINED_SCORE_SOURCE = 3
+CALCULATED_SCORE_SOURCES = frozenset((MEASURED_SCORE_SOURCE, SNR_REFINED_SCORE_SOURCE))
+DATA_SOURCE_PTCLS = 'ptcls'
+DATA_SOURCE_MICS = 'mics'
+DATA_SOURCE_ET_TILTS = 'et_tilts'
+DATA_SOURCE_ET_PTCLS = 'et_ptcls'
+DATA_SOURCE_TYPES = (
+    DATA_SOURCE_PTCLS,
+    DATA_SOURCE_MICS,
+    DATA_SOURCE_ET_TILTS,
+    DATA_SOURCE_ET_PTCLS,
+)
+
 
 def _validate_ratio(name, value):
     if value is None:
@@ -26,18 +42,74 @@ def _validate_missing_score_ratio(missing_score_ratio):
     return _validate_ratio('missing_score_ratio', missing_score_ratio)
 
 
-def _validate_score_source_ratio_inputs(calculated_score_ratio=None, missing_score_ratio=None):
+def _validate_measured_score_ratio(measured_score_ratio):
+    return _validate_ratio('measured_score_ratio', measured_score_ratio)
+
+
+def _validate_snr_score_ratio(snr_score_ratio):
+    return _validate_ratio('snr_score_ratio', snr_score_ratio)
+
+
+def _validate_score_source_ratio_inputs(
+        calculated_score_ratio=None,
+        missing_score_ratio=None,
+        measured_score_ratio=None,
+        snr_score_ratio=None,
+):
     calculated_score_ratio = _validate_calculated_score_ratio(calculated_score_ratio)
     missing_score_ratio = _validate_missing_score_ratio(missing_score_ratio)
-    if (
-        calculated_score_ratio is not None
-        and missing_score_ratio is not None
-        and calculated_score_ratio + missing_score_ratio > 1.0
-    ):
-        raise ValueError(
-            'calculated_score_ratio and missing_score_ratio must sum to at most 1.0.'
+    measured_score_ratio = _validate_measured_score_ratio(measured_score_ratio)
+    snr_score_ratio = _validate_snr_score_ratio(snr_score_ratio)
+    ratio_sum = sum(
+        ratio for ratio in (
+            calculated_score_ratio,
+            measured_score_ratio,
+            snr_score_ratio,
+            missing_score_ratio,
         )
-    return calculated_score_ratio, missing_score_ratio
+        if ratio is not None
+    )
+    if ratio_sum > 1.0:
+        raise ValueError(
+            'Active score source ratios must sum to at most 1.0.'
+        )
+    return calculated_score_ratio, missing_score_ratio, measured_score_ratio, snr_score_ratio
+
+
+def _validate_data_source_ratio_inputs(
+        ptcls_ratio=None,
+        mics_ratio=None,
+        et_tilts_ratio=None,
+        et_ptcls_ratio=None,
+):
+    ratios = {
+        DATA_SOURCE_PTCLS: _validate_ratio('ptcls_ratio', ptcls_ratio),
+        DATA_SOURCE_MICS: _validate_ratio('mics_ratio', mics_ratio),
+        DATA_SOURCE_ET_TILTS: _validate_ratio('et_tilts_ratio', et_tilts_ratio),
+        DATA_SOURCE_ET_PTCLS: _validate_ratio('et_ptcls_ratio', et_ptcls_ratio),
+    }
+    ratio_sum = sum(ratio for ratio in ratios.values() if ratio is not None)
+    if ratio_sum > 1.0:
+        raise ValueError('Active data source ratios must sum to at most 1.0.')
+    return ratios
+
+
+def _has_active_data_source_ratios(ratios):
+    return any(value is not None for value in ratios.values())
+
+
+def _normalize_data_source_ratio_mapping(data_source_ratios=None):
+    if data_source_ratios is None:
+        return _validate_data_source_ratio_inputs()
+    if any(key in DATA_SOURCE_TYPES for key in data_source_ratios):
+        normalized = {
+            data_source: _validate_ratio(f'{data_source}_ratio', data_source_ratios.get(data_source))
+            for data_source in DATA_SOURCE_TYPES
+        }
+        if sum(value for value in normalized.values() if value is not None) > 1.0:
+            raise ValueError('Active data source ratios must sum to at most 1.0.')
+        return normalized
+    return _validate_data_source_ratio_inputs(**data_source_ratios)
 
 
 def _coerce_optional_sequence(values, expected_length):
@@ -64,7 +136,7 @@ def _derive_score_source_from_legacy(used_default_score, expected_length):
     legacy_values = _coerce_optional_sequence(used_default_score, expected_length)
     if legacy_values is None:
         return None
-    return [0 if int(flag) == 0 else 1 for flag in legacy_values]
+    return [MEASURED_SCORE_SOURCE if int(flag) == 0 else DEFAULT_GOOD_BAD_SCORE_SOURCE for flag in legacy_values]
 
 
 def _sample_without_replacement(items, sample_size, weights=None):
@@ -91,6 +163,103 @@ def _sample_without_replacement(items, sample_size, weights=None):
                 return [items[position] for position in selected_positions]
 
     return random.sample(items, sample_size)
+
+
+def _unique_in_order(items):
+    unique_items = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique_items.append(item)
+    return unique_items
+
+
+def _build_data_source_by_index(id_index_dict, id_data_source_dict=None):
+    if id_data_source_dict is None:
+        return {}
+    data_source_by_index = {}
+    for dataset_id, index_list in id_index_dict.items():
+        data_sources = _coerce_optional_sequence(id_data_source_dict.get(dataset_id), len(index_list))
+        if data_sources is None:
+            continue
+        for index, data_source in zip(index_list, data_sources):
+            data_source_by_index[index] = str(data_source)
+    return data_source_by_index
+
+
+def _collect_data_source_by_index_from_buckets(*bucket_dicts):
+    data_source_by_index = {}
+    for bucket_dict in bucket_dicts:
+        for bucket in bucket_dict.values():
+            if not isinstance(bucket, dict):
+                continue
+            index_list = list(bucket.get('id', []))
+            data_sources = _coerce_optional_sequence(bucket.get('data_source'), len(index_list))
+            if data_sources is None:
+                continue
+            for index, data_source in zip(index_list, data_sources):
+                data_source_by_index[index] = str(data_source)
+    return data_source_by_index
+
+
+def _apply_data_source_ratios(selected_indices, available_indices, data_source_by_index, data_source_ratios):
+    if not _has_active_data_source_ratios(data_source_ratios) or not data_source_by_index:
+        return selected_indices
+
+    sample_size = len(selected_indices)
+    if sample_size <= 0:
+        return selected_indices
+
+    available_indices = _unique_in_order(available_indices)
+    selected_set = set(selected_indices)
+    selected_output = []
+    selected_output_set = set()
+
+    def _indices_for_source(indices, data_source):
+        return [
+            index for index in indices
+            if data_source_by_index.get(index, DATA_SOURCE_PTCLS) == data_source
+        ]
+
+    for data_source, ratio in data_source_ratios.items():
+        if ratio is None:
+            continue
+        target_count = int(round(sample_size * ratio))
+        if target_count <= 0:
+            continue
+        source_selected = [
+            index for index in _indices_for_source(selected_indices, data_source)
+            if index not in selected_output_set
+        ]
+        source_available = [
+            index for index in _indices_for_source(available_indices, data_source)
+            if index not in selected_output_set and index not in selected_set
+        ]
+        target_pool = source_selected + source_available
+        selected_for_source = _sample_without_replacement(
+            target_pool,
+            min(target_count, len(target_pool)),
+        )
+        selected_output.extend(selected_for_source)
+        selected_output_set.update(selected_for_source)
+
+    remaining_slots = sample_size - len(selected_output)
+    if remaining_slots > 0:
+        backfill_pool = [
+            index for index in selected_indices
+            if index not in selected_output_set
+        ] + [
+            index for index in available_indices
+            if index not in selected_output_set and index not in selected_set
+        ]
+        selected_backfill = _sample_without_replacement(backfill_pool, remaining_slots)
+        selected_output.extend(selected_backfill)
+
+    selected_output = selected_output[:sample_size]
+    random.shuffle(selected_output)
+    return selected_output
 
 
 def _sample_ids_with_metadata(index_list, sample_size, used_default_score=None, score_source=None, weights=None):
@@ -121,14 +290,29 @@ def _shuffle_metadata(index_list, used_default_score=None, score_source=None, we
 
 def _select_indices_with_score_source_ratios(index_list, sample_size, score_source,
                                              calculated_score_ratio=None, missing_score_ratio=None,
+                                             measured_score_ratio=None, snr_score_ratio=None,
                                              weights=None):
     weights = _coerce_optional_sequence(weights, len(index_list))
     score_source = _coerce_optional_sequence(score_source, len(index_list))
-    calculated_score_ratio, missing_score_ratio = _validate_score_source_ratio_inputs(
+    (
         calculated_score_ratio,
         missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
+    ) = _validate_score_source_ratio_inputs(
+        calculated_score_ratio,
+        missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
     )
-    if score_source is None or (calculated_score_ratio is None and missing_score_ratio is None):
+    if score_source is None or all(
+        ratio is None for ratio in (
+            calculated_score_ratio,
+            measured_score_ratio,
+            snr_score_ratio,
+            missing_score_ratio,
+        )
+    ):
         return _sample_without_replacement(index_list, sample_size, weights=weights)
 
     sample_size = min(sample_size, len(index_list))
@@ -145,7 +329,10 @@ def _select_indices_with_score_source_ratios(index_list, sample_size, score_sour
         return _sample_without_replacement(target_positions, target_count, weights=position_weights)
 
     if calculated_score_ratio is not None:
-        calculated_positions = [idx for idx, source in enumerate(score_source) if int(source) == 0]
+        calculated_positions = [
+            idx for idx, source in enumerate(score_source)
+            if int(source) in CALCULATED_SCORE_SOURCES
+        ]
         selected_calculated = _take_positions(
             calculated_positions,
             min(int(round(sample_size * calculated_score_ratio)), len(calculated_positions)),
@@ -153,8 +340,26 @@ def _select_indices_with_score_source_ratios(index_list, sample_size, score_sour
         selected_positions.extend(selected_calculated)
         selected_position_set.update(selected_calculated)
 
+    if measured_score_ratio is not None:
+        measured_positions = [idx for idx, source in enumerate(score_source) if int(source) == MEASURED_SCORE_SOURCE]
+        selected_measured = _take_positions(
+            [idx for idx in measured_positions if idx not in selected_position_set],
+            min(int(round(sample_size * measured_score_ratio)), len(measured_positions)),
+        )
+        selected_positions.extend(selected_measured)
+        selected_position_set.update(selected_measured)
+
+    if snr_score_ratio is not None:
+        snr_positions = [idx for idx, source in enumerate(score_source) if int(source) == SNR_REFINED_SCORE_SOURCE]
+        selected_snr = _take_positions(
+            [idx for idx in snr_positions if idx not in selected_position_set],
+            min(int(round(sample_size * snr_score_ratio)), len(snr_positions)),
+        )
+        selected_positions.extend(selected_snr)
+        selected_position_set.update(selected_snr)
+
     if missing_score_ratio is not None:
-        missing_positions = [idx for idx, source in enumerate(score_source) if int(source) == 2]
+        missing_positions = [idx for idx, source in enumerate(score_source) if int(source) == FALLBACK_DEFAULT_SCORE_SOURCE]
         selected_missing = _take_positions(
             [idx for idx in missing_positions if idx not in selected_position_set],
             min(int(round(sample_size * missing_score_ratio)), len(missing_positions)),
@@ -204,6 +409,12 @@ class MyResampleSampler(Sampler):
                  shuffle_mix_up_ratio=0.0,
                  calculated_score_ratio=None,
                  missing_score_ratio=None,
+                 measured_score_ratio=None,
+                 snr_score_ratio=None,
+                 ptcls_ratio=None,
+                 mics_ratio=None,
+                 et_tilts_ratio=None,
+                 et_ptcls_ratio=None,
                  ):
         self.data = data
         if index_list is None:
@@ -228,7 +439,20 @@ class MyResampleSampler(Sampler):
         (
             self.calculated_score_ratio,
             self.missing_score_ratio,
-        ) = _validate_score_source_ratio_inputs(calculated_score_ratio, missing_score_ratio)
+            self.measured_score_ratio,
+            self.snr_score_ratio,
+        ) = _validate_score_source_ratio_inputs(
+            calculated_score_ratio,
+            missing_score_ratio,
+            measured_score_ratio,
+            snr_score_ratio,
+        )
+        self.data_source_ratios = _validate_data_source_ratio_inputs(
+            ptcls_ratio,
+            mics_ratio,
+            et_tilts_ratio,
+            et_ptcls_ratio,
+        )
         self.indices = resample_from_id_index_dict_finetune(self.id_index_dict_pos,
                                                             self.id_index_dict_mid,
                                                             self.id_index_dict_neg,
@@ -243,7 +467,10 @@ class MyResampleSampler(Sampler):
                                                             balance_per_interval=balance_per_interval,
                                                             index_list=index_list,
                                                             calculated_score_ratio=self.calculated_score_ratio,
-                                                            missing_score_ratio=self.missing_score_ratio
+                                                            missing_score_ratio=self.missing_score_ratio,
+                                                            measured_score_ratio=self.measured_score_ratio,
+                                                            snr_score_ratio=self.snr_score_ratio,
+                                                            data_source_ratios=self.data_source_ratios,
                                                             # , error_balance=error_balance,
                                                             # mean_error_dis_dict=mean_error_dis_dict
                                                             # , data_error_dis_dict=data_error_dis_dict
@@ -263,6 +490,9 @@ class MyResampleSampler(Sampler):
                                                             index_list=self.index_list,
                                                             calculated_score_ratio=self.calculated_score_ratio,
                                                             missing_score_ratio=self.missing_score_ratio,
+                                                            measured_score_ratio=self.measured_score_ratio,
+                                                            snr_score_ratio=self.snr_score_ratio,
+                                                            data_source_ratios=self.data_source_ratios,
                                                             # , error_balance=self.error_balance,
                                                             # mean_error_dis_dict=self.mean_error_dis_dict
                                                             # , data_error_dis_dict=self.data_error_dis_dict
@@ -280,7 +510,10 @@ class MyResampleSampler_pretrain(Sampler):
                  shuffle_mix_up_ratio=0.2, dataset_id_map=None, bad_particles_ratio=0.1, combine_same_class=False,
                  only_mixup_bad_particles=False, id_scores_dict=None, id_used_default_score_dict=None,
                  id_score_source_dict=None, scores_bar=0.8, id_protein_name_dict=None, num_processes=1,
-                 calculated_score_ratio=None, missing_score_ratio=None):
+                 calculated_score_ratio=None, missing_score_ratio=None,
+                 measured_score_ratio=None, snr_score_ratio=None,
+                 id_data_source_dict=None,
+                 ptcls_ratio=None, mics_ratio=None, et_tilts_ratio=None, et_ptcls_ratio=None):
         # if isinstance(shuffle_type, int):
         #     shuffle_type=int(shuffle_type/2)
 
@@ -299,12 +532,26 @@ class MyResampleSampler_pretrain(Sampler):
         self.id_scores_dict = id_scores_dict
         self.id_used_default_score_dict = id_used_default_score_dict
         self.id_score_source_dict = id_score_source_dict
+        self.id_data_source_dict = id_data_source_dict
         self.scores_bar = scores_bar
         self.id_protein_name_dict=id_protein_name_dict
         (
             self.calculated_score_ratio,
             self.missing_score_ratio,
-        ) = _validate_score_source_ratio_inputs(calculated_score_ratio, missing_score_ratio)
+            self.measured_score_ratio,
+            self.snr_score_ratio,
+        ) = _validate_score_source_ratio_inputs(
+            calculated_score_ratio,
+            missing_score_ratio,
+            measured_score_ratio,
+            snr_score_ratio,
+        )
+        self.data_source_ratios = _validate_data_source_ratio_inputs(
+            ptcls_ratio,
+            mics_ratio,
+            et_tilts_ratio,
+            et_ptcls_ratio,
+        )
         self.batch_num=None
         self.num_processes=num_processes
 
@@ -320,7 +567,11 @@ class MyResampleSampler_pretrain(Sampler):
                                               scores_bar=scores_bar,
                                               id_protein_name_dict=self.id_protein_name_dict,
                                               calculated_score_ratio=self.calculated_score_ratio,
-                                              missing_score_ratio=self.missing_score_ratio
+                                              missing_score_ratio=self.missing_score_ratio,
+                                              measured_score_ratio=self.measured_score_ratio,
+                                              snr_score_ratio=self.snr_score_ratio,
+                                              id_data_source_dict=id_data_source_dict,
+                                              data_source_ratios=self.data_source_ratios
                                               )
         if isinstance(self.shuffle_type, int):
             combined_resampled_index_list, indices = self._build_batched_index_list(
@@ -379,7 +630,11 @@ class MyResampleSampler_pretrain(Sampler):
                                               scores_bar=self.scores_bar,
                                               id_protein_name_dict=self.id_protein_name_dict,
                                               calculated_score_ratio=self.calculated_score_ratio,
-                                              missing_score_ratio=self.missing_score_ratio
+                                              missing_score_ratio=self.missing_score_ratio,
+                                              measured_score_ratio=self.measured_score_ratio,
+                                              snr_score_ratio=self.snr_score_ratio,
+                                              id_data_source_dict=self.id_data_source_dict,
+                                              data_source_ratios=self.data_source_ratios
                                               )
         self.indices = indices
         self.my_seed += 1
@@ -432,14 +687,26 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                 per_batch_num=0,
                                 id_protein_name_dict=None,
                                 calculated_score_ratio=None,
-                                missing_score_ratio=None
+                                missing_score_ratio=None,
+                                measured_score_ratio=None,
+                                snr_score_ratio=None,
+                                id_data_source_dict=None,
+                                data_source_ratios=None
                                 ):
     random.seed(my_seed)
     np.random.seed(my_seed)
-    calculated_score_ratio, missing_score_ratio = _validate_score_source_ratio_inputs(
+    (
         calculated_score_ratio,
         missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
+    ) = _validate_score_source_ratio_inputs(
+        calculated_score_ratio,
+        missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
     )
+    data_source_ratios = _normalize_data_source_ratio_mapping(data_source_ratios)
     if interval_list is None:
         interval_list = [0.3]
     resampled_index_list = []
@@ -492,7 +759,9 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                                    my_id] if id_score_source_dict is not None else None,
                                                                                interval_list=interval_list,
                                                                                calculated_score_ratio=calculated_score_ratio,
-                                                                               missing_score_ratio=missing_score_ratio)
+                                                                               missing_score_ratio=missing_score_ratio,
+                                                                               measured_score_ratio=measured_score_ratio,
+                                                                               snr_score_ratio=snr_score_ratio)
 
                 selected_index_list2, mix_up_list_added2 = get_index_per_class(id_index_dict[id_map[my_id]],
                                                                                max_number_per_sample_neg, shuffle_type,
@@ -506,7 +775,9 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                                    id_map[my_id]] if id_score_source_dict is not None else None,
                                                                                interval_list=interval_list,
                                                                                calculated_score_ratio=calculated_score_ratio,
-                                                                               missing_score_ratio=missing_score_ratio)
+                                                                               missing_score_ratio=missing_score_ratio,
+                                                                               measured_score_ratio=measured_score_ratio,
+                                                                               snr_score_ratio=snr_score_ratio)
                 new_selected_index_list = selected_index_list1 + selected_index_list2
                 # random.shuffle(new_selected_index_list)
                 # resampled_index_list.append(new_selected_index_list)
@@ -531,7 +802,9 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                                      my_id] if id_score_source_dict is not None else None,
                                                                                  interval_list=interval_list,
                                                                                  calculated_score_ratio=calculated_score_ratio,
-                                                                                 missing_score_ratio=missing_score_ratio)
+                                                                                 missing_score_ratio=missing_score_ratio,
+                                                                                 measured_score_ratio=measured_score_ratio,
+                                                                                 snr_score_ratio=snr_score_ratio)
             if only_mixup_bad_particles:
                 if my_id in bad_id_list:
                     new_selected_index_list = []
@@ -573,6 +846,8 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
                                                                              bad_particles_ratio=bad_particles_ratio,
                                                                              calculated_score_ratio=calculated_score_ratio,
                                                                              missing_score_ratio=missing_score_ratio,
+                                                                             measured_score_ratio=measured_score_ratio,
+                                                                             snr_score_ratio=snr_score_ratio,
 
                                                                              )
             if only_mixup_bad_particles:
@@ -624,6 +899,18 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
 
     if shuffle_type == 'batch':
         # return final_resampled_index_list
+        if _has_active_data_source_ratios(data_source_ratios):
+            flat_indices = [item for sublist in resampled_index_list for item in sublist]
+            data_source_by_index = _build_data_source_by_index(ids_list_all and id_index_dict or {}, id_data_source_dict)
+            available_indices = [item for dataset_id in ids_list_all for item in id_index_dict.get(dataset_id, [])]
+            return [
+                _apply_data_source_ratios(
+                    flat_indices,
+                    available_indices,
+                    data_source_by_index,
+                    data_source_ratios,
+                )
+            ]
         return resampled_index_list
         # if per_batch_num > 0:
         #     return final_resampled_index_list
@@ -633,6 +920,15 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
         result = [item for sublist in resampled_index_list for item in sublist]
         if shuffle_type == 'all':
             random.shuffle(result)
+    if _has_active_data_source_ratios(data_source_ratios):
+        data_source_by_index = _build_data_source_by_index(id_index_dict, id_data_source_dict)
+        available_indices = [item for dataset_id in ids_list_all for item in id_index_dict.get(dataset_id, [])]
+        result = _apply_data_source_ratios(
+            result,
+            available_indices,
+            data_source_by_index,
+            data_source_ratios,
+        )
     return result
 
 
@@ -655,12 +951,20 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
                         bad_particles_ratio=0.2,
                         is_bad_class=False, error_distribution=None, dataset_scores=None, scores_bar=0.8,
                         balance_per_interval=False, interval_list=None, dataset_used_default_score=None,
-                        dataset_score_source=None, calculated_score_ratio=None, missing_score_ratio=None):
+                        dataset_score_source=None, calculated_score_ratio=None, missing_score_ratio=None,
+                        measured_score_ratio=None, snr_score_ratio=None):
     if interval_list is None:
         interval_list = [0.3]
-    calculated_score_ratio, missing_score_ratio = _validate_score_source_ratio_inputs(
+    (
         calculated_score_ratio,
         missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
+    ) = _validate_score_source_ratio_inputs(
+        calculated_score_ratio,
+        missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
     )
 
     if isinstance(index_list, dict):
@@ -767,12 +1071,17 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
     len_index_list = len(index_list)
     if max_number_per_sample is not None and len_index_list > max_number_per_sample:
         if dataset_score_source is not None and (
-            calculated_score_ratio is not None or missing_score_ratio is not None
+            calculated_score_ratio is not None
+            or measured_score_ratio is not None
+            or snr_score_ratio is not None
+            or missing_score_ratio is not None
         ):
             selected_index_list = _select_indices_with_score_source_ratios(
                 index_list, max_number_per_sample, dataset_score_source,
                 calculated_score_ratio=calculated_score_ratio,
                 missing_score_ratio=missing_score_ratio,
+                measured_score_ratio=measured_score_ratio,
+                snr_score_ratio=snr_score_ratio,
                 weights=error_distribution
             )
         elif error_distribution is not None:
@@ -816,6 +1125,9 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                          index_list=None,
                                          calculated_score_ratio=None,
                                          missing_score_ratio=None,
+                                         measured_score_ratio=None,
+                                         snr_score_ratio=None,
+                                         data_source_ratios=None,
 
                                          # error_balance=None,
                                          # mean_error_dis_dict=None,
@@ -823,10 +1135,18 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                                          ):
     random.seed(my_seed)
     np.random.seed(my_seed)
-    calculated_score_ratio, missing_score_ratio = _validate_score_source_ratio_inputs(
+    (
         calculated_score_ratio,
         missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
+    ) = _validate_score_source_ratio_inputs(
+        calculated_score_ratio,
+        missing_score_ratio,
+        measured_score_ratio,
+        snr_score_ratio,
     )
+    data_source_ratios = _normalize_data_source_ratio_mapping(data_source_ratios)
     if index_list is None:
         index_list = [0.3]
     if isinstance(shuffle_type, int):
@@ -867,6 +1187,8 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
                 interval_list=index_list,
                 calculated_score_ratio=calculated_score_ratio,
                 missing_score_ratio=missing_score_ratio,
+                measured_score_ratio=measured_score_ratio,
+                snr_score_ratio=snr_score_ratio,
             )
 
             if only_mixup_bad_particles:
@@ -910,6 +1232,25 @@ def resample_from_id_index_dict_finetune(id_index_dict_pos, id_index_dict_mid, i
     resampled_index_list = [item for sublist in resampled_dataset_groups for item in sublist]
     if shuffle_type == 'all':
         random.shuffle(resampled_index_list)
+    if _has_active_data_source_ratios(data_source_ratios):
+        data_source_by_index = _collect_data_source_by_index_from_buckets(
+            id_index_dict_pos,
+            id_index_dict_neg,
+            id_index_dict_mid,
+        )
+        available_indices = _unique_in_order(
+            item
+            for bucket_dict in (id_index_dict_pos, id_index_dict_neg, id_index_dict_mid)
+            for bucket in bucket_dict.values()
+            if isinstance(bucket, dict)
+            for item in bucket.get('id', [])
+        )
+        resampled_index_list = _apply_data_source_ratios(
+            resampled_index_list,
+            available_indices,
+            data_source_by_index,
+            data_source_ratios,
+        )
     return resampled_index_list
 
 

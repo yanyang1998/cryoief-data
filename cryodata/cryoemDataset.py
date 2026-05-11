@@ -20,10 +20,23 @@ logger = logging.getLogger(__name__)
 # Pixels threshold above which an image is classified as a micrograph rather than a particle
 MICROGRAPH_SIZE_THRESHOLD = 384
 LMDB_REFERENCE_MANIFEST_FILENAME = 'lmdb_reference_manifest.json'
+CALCULATED_SCORE_SOURCES = frozenset((0, 3))
+DATA_SOURCE_LABEL_FILENAME = 'labels_data_source.data'
+DATA_SOURCE_PTCLS = 'ptcls'
+DATA_SOURCE_MICS = 'mics'
+DATA_SOURCE_ET_TILTS = 'et_tilts'
+DATA_SOURCE_ET_PTCLS = 'et_ptcls'
+SUPPORTED_DATA_SOURCE_TYPES = (
+    DATA_SOURCE_PTCLS,
+    DATA_SOURCE_MICS,
+    DATA_SOURCE_ET_TILTS,
+    DATA_SOURCE_ET_PTCLS,
+)
+MICROGRAPH_LIKE_DATA_SOURCES = frozenset((DATA_SOURCE_MICS, DATA_SOURCE_ET_TILTS))
 
 
 def _derive_used_default_score_from_source(score_source_values):
-    return [0 if int(value) == 0 else 1 for value in score_source_values]
+    return [0 if int(value) in CALCULATED_SCORE_SOURCES else 1 for value in score_source_values]
 
 
 def _normalize_score_source_labels(score_source_values, legacy_default_values, expected_length):
@@ -50,6 +63,26 @@ def _normalize_score_source_labels(score_source_values, legacy_default_values, e
         return [0 if int(flag) == 0 else 1 for flag in legacy_default_list]
 
     return [0] * expected_length
+
+
+def _normalize_data_source_labels(data_source_values, expected_length, data_path):
+    """Load per-particle source labels, defaulting legacy datasets to cryo-EM particles."""
+    if data_source_values is None:
+        return [DATA_SOURCE_PTCLS] * expected_length
+
+    labels = [str(value) for value in data_source_values]
+    if len(labels) != expected_length:
+        raise ValueError(
+            f"{DATA_SOURCE_LABEL_FILENAME} length mismatch: expected {expected_length}, "
+            f"found {len(labels)} in {data_path}."
+        )
+    invalid = sorted({label for label in labels if label not in SUPPORTED_DATA_SOURCE_TYPES})
+    if invalid:
+        raise ValueError(
+            f"{DATA_SOURCE_LABEL_FILENAME} contains invalid data source labels: {invalid}. "
+            f"Supported values: {list(SUPPORTED_DATA_SOURCE_TYPES)}."
+        )
+    return labels
 
 
 class MyEmFile(object):
@@ -145,6 +178,7 @@ class CryoMetaData(MyEmFile):
         self.id_index_dict = None
         self.id_score_source_dict = None
         self.id_used_default_score_dict = None
+        self.id_data_source_dict = None
 
         assert processed_data_path is not None, "processed_data_path must be provided"
         self.load_preprocessed_data_path(data_path=processed_data_path,
@@ -298,6 +332,15 @@ class CryoMetaData(MyEmFile):
             self.length,
         )
         self.labels_used_default_score = _derive_used_default_score_from_source(self.labels_score_source)
+        labels_data_source_raw = None
+        if os.path.exists(os.path.join(data_path, DATA_SOURCE_LABEL_FILENAME)):
+            with open(os.path.join(data_path, DATA_SOURCE_LABEL_FILENAME), 'rb') as filehandle:
+                labels_data_source_raw = pickle.load(filehandle)
+        self.labels_data_source = _normalize_data_source_labels(
+            labels_data_source_raw,
+            self.length,
+            data_path,
+        )
 
         # with open(path_out + 'output_tif_select_label.data', 'rb') as filehandle:
         #     self.tifs_selection_label = pickle.load(filehandle)
@@ -385,6 +428,7 @@ class CryoMetaData(MyEmFile):
         labels_classification_np = np.array(self.labels_classification)
         labels_score_source_np = np.array(self.labels_score_source)
         labels_used_default_score_np = np.array(self.labels_used_default_score)
+        labels_data_source_np = np.array(self.labels_data_source)
         for name, id in self.protein_id_dict.items():
             item_pos = {}
             item_neg = {}
@@ -402,6 +446,7 @@ class CryoMetaData(MyEmFile):
                 item_pos['score'] = [1.0] * len(item_pos['id'])
                 item_pos['score_source'] = labels_score_source_np[protein_index].tolist()
                 item_pos['used_default_score'] = labels_used_default_score_np[protein_index].tolist()
+                item_pos['data_source'] = labels_data_source_np[protein_index].tolist()
             elif name.lower().endswith('bad'):
                 # if name in valset_name and is_valset:
                 #     id_index_dict_neg[id] = np.where(protein_id_list_np == id)[0].tolist()
@@ -413,6 +458,7 @@ class CryoMetaData(MyEmFile):
                 item_neg['score'] = [0.0] * len(item_neg['id'])
                 item_neg['score_source'] = labels_score_source_np[protein_index].tolist()
                 item_neg['used_default_score'] = labels_used_default_score_np[protein_index].tolist()
+                item_neg['data_source'] = labels_data_source_np[protein_index].tolist()
             else:
                 pos_index = protein_index[labels_classification_np[protein_index] >= middle_range_balance_train[1]]
                 # Discard data with a score less than 0
@@ -433,6 +479,7 @@ class CryoMetaData(MyEmFile):
                         item_mid['score'] = labels_classification_np[mid_index].tolist()
                         item_mid['score_source'] = labels_score_source_np[mid_index].tolist()
                         item_mid['used_default_score'] = labels_used_default_score_np[mid_index].tolist()
+                        item_mid['data_source'] = labels_data_source_np[mid_index].tolist()
                         # if data_error_dis_dict is not None:
                         #     mid_dis = data_error_dis_dict[id][
                         #         (labels_classification_np[protein_index] >= middle_range_balance_train[0]) & (
@@ -457,11 +504,13 @@ class CryoMetaData(MyEmFile):
                     item_pos['score'] = labels_classification_np[pos_index].tolist()
                     item_pos['score_source'] = labels_score_source_np[pos_index].tolist()
                     item_pos['used_default_score'] = labels_used_default_score_np[pos_index].tolist()
+                    item_pos['data_source'] = labels_data_source_np[pos_index].tolist()
                 if len(neg_index) > 0:
                     item_neg['id'] = neg_index.tolist()
                     item_neg['score'] = labels_classification_np[neg_index].tolist()
                     item_neg['score_source'] = labels_score_source_np[neg_index].tolist()
                     item_neg['used_default_score'] = labels_used_default_score_np[neg_index].tolist()
+                    item_neg['data_source'] = labels_data_source_np[neg_index].tolist()
             if len(item_pos) > 0:
                 id_index_dict_pos[id] = item_pos
             if len(item_neg) > 0:
@@ -544,9 +593,11 @@ class CryoMetaData(MyEmFile):
         id_scores_dict = {}
         id_score_source_dict = {}
         id_used_default_score_dict = {}
+        id_data_source_dict = {}
         scores_np = np.array(self.labels_classification)
         score_source_np = np.array(self.labels_score_source)
         used_default_score_np = np.array(self.labels_used_default_score)
+        data_source_np = np.array(self.labels_data_source)
         protein_id_list_np = np.array(target_protein_id_list)
         for id in target_protein_id_dict.values():
             # aaa = np.where(protein_id_list_np == id)
@@ -559,9 +610,11 @@ class CryoMetaData(MyEmFile):
             id_scores_dict[id] = scores_np[id_index_dict[id]]
             id_score_source_dict[id] = score_source_np[id_index_dict[id]]
             id_used_default_score_dict[id] = used_default_score_np[id_index_dict[id]]
+            id_data_source_dict[id] = data_source_np[id_index_dict[id]]
         self.id_index_dict = id_index_dict
         self.id_score_source_dict = id_score_source_dict
         self.id_used_default_score_dict = id_used_default_score_dict
+        self.id_data_source_dict = id_data_source_dict
         return id_index_dict, dataset_id_map, id_scores_dict
 
 
@@ -672,6 +725,7 @@ class CryoEMDataset(Dataset):
         self.labels_classification = metadata.labels_classification
         self.labels_score_source = metadata.labels_score_source
         self.labels_used_default_score = metadata.labels_used_default_score
+        self.labels_data_source = metadata.labels_data_source
 
         self.slice_setting = slice_setting
         self.mix_pos_setting = mix_pos_setting
@@ -898,6 +952,7 @@ class CryoEMDataset(Dataset):
         label_for_classification = self.labels_classification[item]
         label_score_source = self.labels_score_source[item]
         label_used_default_score = self.labels_used_default_score[item]
+        label_data_source = self.labels_data_source[item]
         if self.use_triplex_labels:
             if label_for_classification > self.bar_score:
                 label_for_classification = 1.0
@@ -912,8 +967,13 @@ class CryoEMDataset(Dataset):
         mrcdata_rotate1 = None  # 初始化
         mrcdata_rotate2 = None  # 初始化
 
-        # Determine if this is micrographs data (mics) or particles data (ptcls)
-        is_mics = True if mrcdata.size[-1] > MICROGRAPH_SIZE_THRESHOLD else False
+        # labels_data_source.data records source modality per item:
+        # ptcls/cryo-EM particles, mics/cryo-EM micrographs, et_tilts/cryo-ET tilts,
+        # et_ptcls/extracted cryo-ET particles. Legacy datasets default to ptcls;
+        # the image-size fallback only catches old unlabeled micrograph datasets.
+        is_mics = label_data_source in MICROGRAPH_LIKE_DATA_SOURCES
+        if label_data_source == DATA_SOURCE_PTCLS and getattr(mrcdata, 'size', None) is not None:
+            is_mics = True if mrcdata.size[-1] > MICROGRAPH_SIZE_THRESHOLD else False
 
         if self.needs_aug2:
 
@@ -984,6 +1044,7 @@ class CryoEMDataset(Dataset):
             'label_for_classification': label_for_classification,
             'label_score_source': label_score_source,
             'label_used_default_score': label_used_default_score,
+            'label_data_source': label_data_source,
             'mask': mask,
             'item': item,
             'local_crops1': local_crops1, 
