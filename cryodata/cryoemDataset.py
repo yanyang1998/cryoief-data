@@ -8,7 +8,6 @@ import os
 import pickle
 import random
 import torch
-from io import BytesIO
 import json
 import lmdb
 from annoy import AnnoyIndex
@@ -170,8 +169,7 @@ class MyEmFile(object):
 class CryoMetaData(MyEmFile):
     def __init__(self, cfg=None, mrc_path=None, emfile_path=None, processed_data_path=None, selected_emfile_path=None,
                  tmp_data_save_path=None,
-                 is_extra_valset=False, accelerator=None, ctf_correction_averages=False,
-                 ctf_correction_inference=False):
+                 is_extra_valset=False, accelerator=None):
         super(CryoMetaData, self).__init__(emfile_path, selected_emfile_path)
 
         self.processed_data_path = processed_data_path
@@ -181,18 +179,7 @@ class CryoMetaData(MyEmFile):
         self.id_data_source_dict = None
 
         assert processed_data_path is not None, "processed_data_path must be provided"
-        self.load_preprocessed_data_path(data_path=processed_data_path,
-                                         ctf_correction_averages=ctf_correction_averages,
-                                         ctf_correction_train=ctf_correction_inference)
-
-    # Safe pickle loader to avoid crashing on malformed files and to centralize error handling
-    def _safe_load_pickle(self, path):
-        try:
-            with open(path, 'rb') as fh:
-                return pickle.load(fh)
-        except Exception as e:
-            logger.warning(f"Failed to load pickle file {path}: {e}")
-            return None
+        self.load_preprocessed_data_path(data_path=processed_data_path)
 
     def _safe_load_json(self, path):
         try:
@@ -229,7 +216,7 @@ class CryoMetaData(MyEmFile):
         # if self.selected_particles_id is not None:
         # pass
 
-    def load_preprocessed_data_path(self, data_path, ctf_correction_averages, ctf_correction_train):
+    def load_preprocessed_data_path(self, data_path):
         def _validate_loaded_label_length(name, values, allow_empty_default=False):
             if values is None:
                 return
@@ -248,52 +235,18 @@ class CryoMetaData(MyEmFile):
             if self.lmdb_reference_manifest is None:
                 raise ValueError(f"Failed to load {LMDB_REFERENCE_MANIFEST_FILENAME} from {data_path}.")
 
-        # path_out = path_result_dir + '/tmp/preprocessed_data/'
-        if os.path.exists(data_path + '/output_tif_path.data'):
-            with open(data_path + '/output_tif_path.data', 'rb') as filehandle:
-                self.all_tif_path = pickle.load(filehandle)
-        else:
-            self.all_tif_path = None
-        if ctf_correction_averages and os.path.exists(data_path + '/output_ctf_tif_path.data'):
-            with open(data_path + '/output_ctf_tif_path.data', 'rb') as filehandle:
-                self.all_tif_path_ctf_correction = pickle.load(filehandle)
-        else:
-            self.all_tif_path_ctf_correction = None
+        if self.lmdb_reference_manifest is None and not os.path.exists(data_path + '/lmdb_data'):
+            raise ValueError(
+                f"{data_path} does not contain LMDB data."
+            )
 
-        if self.lmdb_reference_manifest is not None or os.path.exists(data_path + '/lmdb_data'):
-            # lmdb_env = lmdb.open(
-            #     data_path + '/lmdb_data/lmdb_processed',
-            #     readonly=True,
-            #     lock=False,
-            #     readahead=False
-            # )
-            # # self.lmdb_env = lmdb_env
-            # processed_tif_txn = lmdb_env.begin()
-            # self.length = processed_tif_txn.stat()['entries']
-            # lmdb_env.close()
-            with open(data_path + '/protein_id_list.data',
-                      'rb') as filehandle:
-                protein_id_list = pickle.load(filehandle)
-            self.length = len(protein_id_list)
-            if os.path.exists(data_path + '/lmdb_data'):
-                self.lmdb_path = data_path + '/lmdb_data/'
-            else:
-                self.lmdb_path = None
-            self.all_processed_tif_path = None
+        with open(data_path + '/protein_id_list.data', 'rb') as filehandle:
+            protein_id_list = pickle.load(filehandle)
+        self.length = len(protein_id_list)
+        if os.path.exists(data_path + '/lmdb_data'):
+            self.lmdb_path = data_path + '/lmdb_data/'
         else:
-            # self.processed_tif_txn = None
-            self.lmdb_env = None
             self.lmdb_path = None
-
-            with open(data_path + '/output_processed_tif_path.data',
-                      'rb') as filehandle:
-                self.all_processed_tif_path = pickle.load(filehandle)
-            self.length = len(self.all_processed_tif_path)
-        if ctf_correction_train and os.path.exists(data_path + '/output_ctf_processed_tif_path.data'):
-            with open(data_path + '/output_ctf_processed_tif_path.data', 'rb') as filehandle:
-                self.all_processed_tif_path_ctf_correction = pickle.load(filehandle)
-        else:
-            self.all_processed_tif_path_ctf_correction = None
 
         if os.path.exists(data_path + '/labels_for_clustering.data'):
             with open(data_path + '/labels_for_clustering.data', 'rb') as filehandle:
@@ -717,10 +670,6 @@ class CryoEMDataset(Dataset):
         # else:
         #     self.processed_tif_txn = None
         # self.processed_tif_txn = mrcdata.processed_tif_txn
-        self.tif_path_list = metadata.all_processed_tif_path
-        self.tif_path_list_ctf_correction = metadata.all_processed_tif_path_ctf_correction
-        self.tif_path_list_raw = metadata.all_tif_path
-        self.tif_path_list_raw_ctf_correction = metadata.all_tif_path_ctf_correction
         self.labels_for_clustering = metadata.labels_for_clustering
         self.labels_classification = metadata.labels_classification
         self.labels_score_source = metadata.labels_score_source
@@ -765,18 +714,10 @@ class CryoEMDataset(Dataset):
             labels_classification_np = np.array(self.labels_classification)
             self.positive_items = np.where(labels_classification_np == 1)[0]
             self.negative_items = np.where(labels_classification_np == 0)[0]
-        if slice_setting is not None and (slice_setting['p'] > 0 or slice_setting['align_p'] > 0) and slice_setting[
-            'processed_path_slice'] is not None:
-            with open(slice_setting['processed_path_slice'] + '/output_processed_tif_path.data', 'rb') as filehandle:
-                self.tif_path_list_slice = pickle.load(filehandle)
-        else:
-            self.tif_path_list_slice = None
-
         self.pose_id_map = metadata.pose_id_map
 
     def __len__(self):
         return self.tif_len
-        # return len(self.tif_path_list)
 
     def _build_default_id_index_dict(self):
         id_index_dict = {protein_id: [] for protein_id in self.protein_id_dict.values()}
@@ -990,8 +931,6 @@ class CryoEMDataset(Dataset):
                 item2, weight, is_mix_pos = self.get_item2(item)
                 if item2 is not None:
                     mrcdata2 = self.get_mrcdata(item=item2)
-                elif self.slice_setting is not None and random.random() < self.slice_setting['p']:
-                    mrcdata2 = self.get_corr_slice(item)
                 else:
                     mrcdata2 = mrcdata
 
@@ -1147,34 +1086,11 @@ class CryoEMDataset(Dataset):
             pose_items_id = list(protein_pose_map.keys())
         return nearest, min_id, protein_name, pose_items_id, item1_pose_id
 
-    def get_corr_slice(self, item):
-        tif_path = self.tif_path_list[item]
-        tif_path_split = tif_path.split('/')
-        tif_path_split[-5] += '_slice'
-        tif_path2 = '/'.join(tif_path_split)
-        mrcdata2 = None
-        if os.path.exists(tif_path2):
-            try:
-                with open(tif_path2,
-                          'rb') as filehandle:
-                    mrcdata2 = pickle.load(filehandle)
-
-            except EOFError:
-                print('error for path: ' + tif_path)
-        return mrcdata2
-
     def get_mrcdata(self, item=None, tif_path=None):
         mrcdata = None
         if tif_path is not None:
-            if os.path.exists(tif_path):
-                try:
-                    with open(tif_path,
-                              'rb') as filehandle:
-                        mrcdata = pickle.load(filehandle)
-
-                except EOFError:
-                    print('error for path: ' + tif_path)
-        elif item is not None:
+            raise ValueError('Direct particle paths are no longer supported; load particles from LMDB.')
+        if item is not None:
             if self.lmdb_reference_manifest is not None:
                 protein_id = self.protein_id_list[item]
                 local_index = self._get_protein_local_index(protein_id, item)
@@ -1232,26 +1148,13 @@ class CryoEMDataset(Dataset):
                     value = txn.get(key)
                     if value is None:
                         raise KeyError(f"LMDB {lmdb_path} is missing expected key {local_idx}.")
-                    # data = torch.load(BytesIO(value),weights_only=False)
                     data = pickle.loads(value)
                     mrcdata = data
                     tif_path = ''
                     # raw_tif_path = ''
                 del data, value
             else:
-                tif_path = self.tif_path_list[item]
-                if self.slice_setting is not None and (random.random() < self.slice_setting['p']):
-                    slice_path = random.choice(self.tif_path_list_slice)
-                    if os.path.exists(slice_path):
-                        tif_path = slice_path
-
-                try:
-                    with open(tif_path,
-                              'rb') as filehandle:
-                        mrcdata = pickle.load(filehandle)
-
-                except EOFError:
-                    print('error for path: ' + tif_path)
+                raise RuntimeError('CryoEMDataset requires LMDB-backed metadata.')
         return mrcdata
 
     def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False,is_mics=False):

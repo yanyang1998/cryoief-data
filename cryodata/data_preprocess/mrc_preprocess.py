@@ -7,7 +7,6 @@ import random
 from cryosparc.dataset import Dataset
 from functools import partial
 import multiprocessing
-from tqdm import tqdm
 from . import mrc
 from . import fft
 from scipy.ndimage import zoom
@@ -139,49 +138,6 @@ def sample_and_evaluate(path_list, save_path, num_stacks=50, num_particles=20000
             'processed_bytes_per_particle': float(np.mean(processed_sample_bytes)) if processed_sample_bytes else 0.0,
         }
     return mean_imgs_len
-
-
-def get_mean_std(path_list, Cnum=10000, is_normalize=True):
-    # calculate means and stds
-    imgs = []
-    random.shuffle(path_list)
-    if len(path_list) < Cnum:
-        Cnum = len(path_list)
-    sample_path_list = random.sample(path_list, Cnum)
-    for i in range(Cnum):
-        # img = np.array(Image.open(path_list[i]))
-        img = pickle.load(open(sample_path_list[i], 'rb'))
-        if isinstance(img, np.ndarray):
-            min_val = np.min(img)
-            max_val = np.max(img)
-        else:
-            min_val, max_val = img.getextrema()
-            img = np.array(img)
-        if max_val - min_val != 0 and is_normalize:
-            img = (img - min_val) / (max_val - min_val)
-        img = img.astype(np.float32)
-        imgs.append(img)
-    imgs_np = np.asarray(imgs)
-    means = imgs_np.mean()
-    stds = imgs_np.std()
-    return means, stds
-
-
-def sample_and_calculate_mean_std(path_list, Cnum=1000, Ctimes=1, is_normalize=True):
-    mean_list = []
-    std_list = []
-    Cnum_all = 0
-    for i in range(Ctimes):
-        if Cnum_all >= len(path_list):
-            break
-        means, stds = get_mean_std(path_list, Cnum, is_normalize=is_normalize)
-        mean_list.append(means)
-        std_list.append(stds)
-        Cnum_all += Cnum
-    mean = np.mean(mean_list)
-    std = np.mean(std_list)
-    return mean, std
-
 
 
 def mrcs_resize(mrcs, width, height=None, is_freqs=True):
@@ -407,82 +363,7 @@ def combine_cs_files_column(cs_path1, cs_path2):
     # cs2star(save_path,save_path.replace('.cs','.star'))
 
 
-def raw_data_preprocess_one_mrcs(name, mrc_dir, raw_dataset_save_dir, processed_dataset_save_dir, FT_dataset_save_dir,
-                                 resize=224,
-                                 is_to_int8=True, indeices_per_mrcs_dict=None):
-    mrcs_path = os.path.join(mrc_dir, name)
-    arr, _ = mrc.parse_mrc(mrcs_path)
-    # mrcs = np.float32(mrcfile.open(mrcs_path).data)
-    mrcs = np.float32(arr)
-    mrcs_len = mrcs.shape[0]
-    raw_single_particle_path = []
-    processed_single_particle_path = []
-    FT_single_particle_path = []
-    if indeices_per_mrcs_dict is None:
-        ids_list = range(mrcs_len)
-    else:
-        ids_list = indeices_per_mrcs_dict[name].tolist()
-
-    if resize and mrcs.shape[1] != resize:
-
-        processed_mrcs = mrcs_resize(mrcs, resize, resize)
-    else:
-        processed_mrcs = mrcs.copy()
-
-    if is_to_int8:
-        processed_mrcs = mrcs_to_int8(processed_mrcs)
-        # processed_mrcs = to_int8(processed_mrcs)
-
-    if FT_dataset_save_dir is not None:
-        particles = []
-        for i in range(mrcs_len):
-            img = mrcs[i]
-            particles.append(fft.ht2_center(img))
-
-        FT_mrcs = np.asarray(particles, dtype=np.float32)
-        FT_mrcs = fft.symmetrize_ht(FT_mrcs)
-        if FT_mrcs.ndim == 2:
-            FT_mrcs = np.expand_dims(FT_mrcs, axis=0)
-
-    for j in ids_list:
-
-        n = str(j + 1).zfill(6)
-
-        if not os.path.exists(os.path.join(processed_dataset_save_dir, name)):
-            os.makedirs(os.path.join(processed_dataset_save_dir, name))
-        with open(os.path.join(processed_dataset_save_dir, name, n + '.data'), 'wb') as filehandle:
-            if is_to_int8:
-                pickle.dump(Image.fromarray(processed_mrcs[j]).convert('L'), filehandle)
-            else:
-                pickle.dump(np.asarray(processed_mrcs[j], dtype=np.float32), filehandle)
-
-        processed_single_particle_path.append(os.path.join(processed_dataset_save_dir, name, n + '.data'))
-
-        if raw_dataset_save_dir is not None:
-            if not os.path.exists(os.path.join(raw_dataset_save_dir, name)):
-                os.makedirs(os.path.join(raw_dataset_save_dir, name))
-            with open(os.path.join(raw_dataset_save_dir, name, n + '.data'), 'wb') as filehandle:
-                # pickle.dump(Image.fromarray(mrcs[j]), filehandle)
-                pickle.dump(mrcs[j], filehandle)
-            raw_single_particle_path.append(os.path.join(raw_dataset_save_dir, name, n + '.data'))
-        else:
-            raw_single_particle_path.append('')
-
-        if FT_dataset_save_dir is not None:
-            if not os.path.exists(os.path.join(FT_dataset_save_dir, name)):
-                os.makedirs(os.path.join(FT_dataset_save_dir, name))
-            with open(os.path.join(FT_dataset_save_dir, name, n + '.data'), 'wb') as filehandle:
-                # pickle.dump(Image.fromarray(mrcs[j]), filehandle)
-                pickle.dump(FT_mrcs[j], filehandle)
-            FT_single_particle_path.append(os.path.join(FT_dataset_save_dir, name, n + '.data'))
-        else:
-            FT_single_particle_path.append('')
-
-    return raw_single_particle_path, processed_single_particle_path, FT_single_particle_path
-
-
-def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True, save_raw_data=True,
-                        save_FT_data=True, use_lmdb=True, num_processes=8, chunksize=0):
+def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True, num_processes=8, chunksize=0):
     if not os.path.exists(dataset_save_dir):
         os.makedirs(dataset_save_dir)
 
@@ -533,103 +414,40 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         if isinstance(mrc_dir,list):
             mrc_dir=[mrc_dir[indices_dict[n][0]] for n in mrcs_names_list_process]
     else:
-        indeices_per_mrcs_dict = None
         # mrcs_names_list_process=mrc_list
         new_cs_data = None
         # all files end with .mrcs or .mrc in mrc_dir
         mrcs_names_list_process = [filename for filename in os.listdir(mrc_dir) if filename.endswith('.mrcs') or filename.endswith('.mrc')]
 
-    if use_lmdb:
-        # tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',mrc_dir.split('/')[-2] if isinstance(mrc_dir,str) else mrc_dir[0].split('/')[-2])
-        tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data',raw_dataset_dir.split('/')[-1])
-        # tmp_data_lmdb_path = os.path.join(dataset_save_dir,'lmdb_data')
-        # tmp_data_lmdb_path = dataset_save_dir
-        tmp_data_save_path = dataset_save_dir
-        if not os.path.exists(tmp_data_lmdb_path):
-            from cryodata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
+    tmp_data_lmdb_path = os.path.join(dataset_save_dir, 'lmdb_data', raw_dataset_dir.split('/')[-1])
+    tmp_data_save_path = dataset_save_dir
+    if not os.path.exists(tmp_data_lmdb_path):
+        from cryodata.data_preprocess.lmdb_preprocess import create_lmdb_dataset
 
-            if isinstance(mrc_dir,str):
-                image_path_list = [os.path.join(mrc_dir, mrcs_name) for mrcs_name in mrcs_names_list_process]
-            else:
-                image_path_list = [os.path.join(dir, mrcs_name) for mrcs_name,dir in zip(mrcs_names_list_process,mrc_dir)]
+        if isinstance(mrc_dir, str):
+            image_path_list = [os.path.join(mrc_dir, mrcs_name) for mrcs_name in mrcs_names_list_process]
+        else:
+            image_path_list = [os.path.join(dir, mrcs_name) for mrcs_name, dir in zip(mrcs_names_list_process, mrc_dir)]
 
-            sample_stats = sample_and_evaluate(
+        sample_stats = sample_and_evaluate(
+            image_path_list,
+            tmp_data_save_path,
+            resize=resize,
+            is_to_int8=is_to_int8,
+            return_stats=True,
+        )
+
+        map_size = {
+            'processed': estimate_processed_map_size(
                 image_path_list,
-                tmp_data_save_path,
-                resize=resize,
-                is_to_int8=is_to_int8,
-                return_stats=True,
+                sample_stats['processed_bytes_per_particle'],
             )
+        }
 
-            # Estimate LMDB capacity from sampled serialized item size and exact stack counts.
-            map_size = {
-                'processed': estimate_processed_map_size(
-                    image_path_list,
-                    sample_stats['processed_bytes_per_particle'],
-                )
-            }
-
-            # 创建 LMDB 数据库
-            create_lmdb_dataset(image_path_list, tmp_data_save_path, num_processes=num_processes,
-                                map_size=map_size, window=False, generate_ft_data=False, resize=resize,
-                                is_to_int8=is_to_int8,
-                                save_raw_data=False)
-
-    else:
-        particles_dir_name = raw_dataset_dir.rstrip('/').split('/')[-1]
-
-        if save_raw_data:
-            raw_dataset_save_dir = os.path.join(dataset_save_dir, 'raw', particles_dir_name)
-            if not os.path.exists(raw_dataset_save_dir):
-                os.makedirs(raw_dataset_save_dir)
-        else:
-            raw_dataset_save_dir = None
-
-        if save_FT_data:
-            FT_dataset_save_dir = os.path.join(dataset_save_dir, 'FT', particles_dir_name)
-            if not os.path.exists(FT_dataset_save_dir):
-                os.makedirs(FT_dataset_save_dir)
-        else:
-            FT_dataset_save_dir = None
-
-        processed_dataset_save_dir = os.path.join(dataset_save_dir, 'processed', particles_dir_name)
-        if not os.path.exists(processed_dataset_save_dir):
-            os.makedirs(processed_dataset_save_dir)
-        raw_path_list = []
-        processed_path_list = []
-        FT_path_list = []
-
-        phbar = tqdm(mrcs_names_list_process, desc='data preprocessing')
-        if isinstance(mrc_dir,list):
-            mrc_dir=mrc_dir[0]
-        func = partial(raw_data_preprocess_one_mrcs, mrc_dir=mrc_dir, raw_dataset_save_dir=raw_dataset_save_dir,
-                       FT_dataset_save_dir=FT_dataset_save_dir,
-                       processed_dataset_save_dir=processed_dataset_save_dir, resize=resize, is_to_int8=is_to_int8,
-                       indeices_per_mrcs_dict=indeices_per_mrcs_dict)
-        pool = multiprocessing.Pool(DEFAULT_WORKER_PROCESSES)
-        results = pool.map(func, phbar)
-        pool.close()
-        pool.join()
-
-        for raw_single_particle_path, processed_single_particle_path, FT_single_particle_path in results:
-            processed_path_list += processed_single_particle_path
-            raw_path_list += raw_single_particle_path
-            FT_path_list += FT_single_particle_path
-
-        with open(os.path.join(dataset_save_dir, 'output_processed_tif_path.data'), 'wb') as filehandle:
-            pickle.dump(processed_path_list, filehandle)
-
-        with open(os.path.join(dataset_save_dir, 'output_tif_path.data'), 'wb') as filehandle:
-            pickle.dump(raw_path_list, filehandle)
-
-        mean_std_raw = sample_and_calculate_mean_std(raw_path_list, is_normalize=False)
-        with open(dataset_save_dir + 'means_stds.data', 'wb') as filehandle:
-            pickle.dump(mean_std_raw, filehandle)
-
-        if FT_dataset_save_dir is not None:
-            mean_std_FT = sample_and_calculate_mean_std(FT_path_list, is_normalize=False)
-            with open(dataset_save_dir + 'means_stds_FT.data', 'wb') as filehandle:
-                pickle.dump(mean_std_FT, filehandle)
+        create_lmdb_dataset(image_path_list, tmp_data_save_path, num_processes=num_processes,
+                            chunksize=chunksize or 1, map_size=map_size, window=False,
+                            generate_ft_data=False, resize=resize, is_to_int8=is_to_int8,
+                            save_raw_data=False)
 
     print('Cryoem data preprocess all done')
     return new_cs_data

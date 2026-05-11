@@ -48,8 +48,6 @@ new_cs_data = raw_data_preprocess(
     raw_data_path,
     processed_data_path,
     resize=224,          # resize particles to 224×224
-    save_raw_data=False, # skip saving unprocessed images
-    save_FT_data=False,  # skip saving Fourier-space images
     is_to_int8=True,     # convert to uint8 for storage efficiency
 )
 
@@ -79,14 +77,11 @@ new_cs_data = raw_data_preprocess(
     dataset_save_dir,
     resize=224,
     is_to_int8=True,
-    save_raw_data=True,
-    save_FT_data=True,
-    use_lmdb=True,
     num_processes=8,
 )
 ```
 
-The main entry point for the preprocessing pipeline. Reads cryoSPARC `.cs` metadata and associated MRC particle stacks from `raw_dataset_dir`, applies the selected transforms, and writes the output to `dataset_save_dir`. Internally it calls `raw_csdata_process_from_cryosparc_dir` to locate and merge the correct `.cs` files, then builds an LMDB database (when `use_lmdb=True`) or individual pickle files (when `use_lmdb=False`). Returns the merged cryoSPARC `Dataset` object.
+The main entry point for the preprocessing pipeline. Reads cryoSPARC `.cs` metadata and associated MRC particle stacks from `raw_dataset_dir`, applies the selected transforms, and writes an LMDB dataset to `dataset_save_dir`. Internally it calls `raw_csdata_process_from_cryosparc_dir` to locate and merge the correct `.cs` files. Returns the merged cryoSPARC `Dataset` object.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -94,9 +89,6 @@ The main entry point for the preprocessing pipeline. Reads cryoSPARC `.cs` metad
 | `dataset_save_dir` | `str` | — | Directory where processed data and metadata will be saved |
 | `resize` | `int` | `224` | Target image size in pixels (square); uses FFT-based downsampling when reducing, bicubic otherwise |
 | `is_to_int8` | `bool` | `True` | Normalize each particle to [0, 255] and cast to `uint8` for compact storage |
-| `save_raw_data` | `bool` | `True` | Save unprocessed raw particles alongside the processed ones (only applies when `use_lmdb=False`) |
-| `save_FT_data` | `bool` | `True` | Compute and save Hartley-transform (real-valued Fourier) representations (only applies when `use_lmdb=False`) |
-| `use_lmdb` | `bool` | `True` | Write output to an LMDB database for fast I/O during training (recommended) |
 | `num_processes` | `int` | `8` | Number of worker processes for parallel MRC file processing |
 
 ---
@@ -247,7 +239,7 @@ from cryodata.cryoemDataset import CryoMetaData
 meta_data = CryoMetaData(processed_data_path='path/to/processed/data')
 ```
 
-Loads and stores all metadata for a preprocessed cryo-EM dataset. Automatically detects whether the dataset uses LMDB storage or individual pickle files. Only `processed_data_path` is required; all other parameters are optional.
+Loads and stores all metadata for a preprocessed cryo-EM dataset using LMDB storage. Only `processed_data_path` is required; all other parameters are optional.
 
 If the processed dataset contains `labels_score_source.data`, CryoIEF loads it as the primary per-particle provenance label with `0=calculated score`, `1=_good/_bad default score`, and `2=missing score in a non-_good/_bad dataset`. For backward compatibility, older processed datasets that only contain `labels_used_default_score.data` are still supported by synthesizing `labels_score_source` as `0` for calculated labels and `1` for default/imputed labels. The legacy in-memory `labels_used_default_score` view is still exposed and is derived from `labels_score_source` with `0 -> 0` and `{1,2} -> 1`.
 
@@ -258,8 +250,6 @@ If the processed dataset contains `labels_score_source.data`, CryoIEF loads it a
 | `processed_data_path` | `str` | — | Path to the directory produced by `raw_data_preprocess` |
 | `emfile_path` | `str` | `None` | Optional path to a `.star` or `.cs` particle file for selection/filtering |
 | `selected_emfile_path` | `str` | `None` | Optional path to a second particle file specifying selected particles |
-| `ctf_correction_averages` | `bool` | `False` | Load CTF-corrected class-average paths if available |
-| `ctf_correction_inference` | `bool` | `False` | Load CTF-corrected particle paths for inference if available |
 
 ---
 
@@ -272,7 +262,7 @@ dataset = CryoEMDataset(metadata=meta_data)
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
 ```
 
-A `torch.utils.data.Dataset` that loads preprocessed cryo-EM particles from an LMDB database or pickle files. Images larger than 384 pixels are treated as micrographs; smaller images are treated as particles. Supports optional on-the-fly transforms passed at construction time.
+A `torch.utils.data.Dataset` that loads preprocessed cryo-EM particles from an LMDB database. Images larger than 384 pixels are treated as micrographs; smaller images are treated as particles. Supports optional on-the-fly transforms passed at construction time.
 
 ---
 
