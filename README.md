@@ -40,6 +40,7 @@ from cryodata.cryoemDataset import CryoEMDataset, CryoMetaData
 import torchvision.transforms as transforms
 import torch
 
+PRETRAIN_MEAN_STD = (0.549995056189533, 0.11784453744259035) # mean and std calculated from the training set of Cryo-IEF
 raw_data_path = 'path/to/cryosparc/particles/job'
 processed_data_path = 'path/to/processed/data'
 
@@ -56,7 +57,7 @@ meta_data = CryoMetaData(processed_data_path=processed_data_path)
 cryodataset = CryoEMDataset(metadata=meta_data)
 
 # Step 3: Set up data augmentation transforms
-base_transforms ={'ptcls': transforms.Compose([transforms.ToTensor()])}
+base_transforms ={'ptcls': transforms.Compose([transforms.ToTensor(),transforms.Normalize(mean=PRETRAIN_MEAN_STD[0], std=PRETRAIN_MEAN_STD[1])])}
 cryodataset.get_transforms(transforms=base_transforms)
 
 # Step 4: Create a DataLoader for training
