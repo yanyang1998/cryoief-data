@@ -11,6 +11,8 @@ from . import fft, mrc
 import gc
 
 logger = logging.getLogger(__name__)
+STACK_FILE_EXTENSIONS = ('.mrcs', '.mrc')
+STACK_SUBDIR_CANDIDATES = ('mics', 'tiltseries')
 
 
 def _open_lmdb_set(base_path, map_size, generate_processed_data, save_raw_data, generate_ft_data):
@@ -283,7 +285,24 @@ def process_one_dataset_paths(dir_one_dataset, num_resample_per_dataset=40000):
 
 
 def get_mrcs_names_list_cs(mrcfile_path):
-    cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(mrcfile_path)
-    blob_path_list = cs_data['blob/path'].tolist()
-    mrcs_names_list = [path.split('/')[-1] for path in blob_path_list]
+    mrcfile_path = os.fspath(mrcfile_path)
+    try:
+        cs_data, mrc_dir = raw_csdata_process_from_cryosparc_dir(mrcfile_path)
+    except Exception:
+        cs_data = None
+        mrc_dir = os.path.dirname(mrcfile_path) if mrcfile_path.endswith(STACK_FILE_EXTENSIONS) else mrcfile_path
+
+    if cs_data is not None:
+        blob_path_list = cs_data['blob/path'].tolist()
+        mrcs_names_list = [path.split('/')[-1] for path in blob_path_list]
+    elif mrcfile_path.endswith(STACK_FILE_EXTENSIONS):
+        mrcs_names_list = [os.path.basename(mrcfile_path)]
+    else:
+        for subdir_name in STACK_SUBDIR_CANDIDATES:
+            full_path = os.path.join(mrc_dir, subdir_name)
+            if os.path.isdir(full_path):
+                mrc_dir = full_path
+                break
+        mrcs_names_list = sorted(os.listdir(mrc_dir))
+        mrcs_names_list = [name for name in mrcs_names_list if name.endswith(STACK_FILE_EXTENSIONS)]
     return mrc_dir, list(dict.fromkeys(mrcs_names_list))

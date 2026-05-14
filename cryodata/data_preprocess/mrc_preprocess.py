@@ -13,6 +13,47 @@ from scipy.ndimage import zoom
 
 # Default worker count for multiprocessing pools
 DEFAULT_WORKER_PROCESSES = 12
+PARTICLE_CS_CANDIDATES = (
+    'restacked_particles.cs',
+    'downsampled_particles.cs',
+    'extracted_particles.cs',
+    'imported_particles.cs',
+    'split_0000.cs',
+)
+PASSTHROUGH_CS_SUFFIXES = (
+    'passthrough_particles.cs',
+    '_split_0.cs',
+)
+
+
+def _find_first_existing(raw_dataset_dir, names):
+    for name in names:
+        path = os.path.join(raw_dataset_dir, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _find_particle_cs_path(raw_dataset_dir):
+    known_path = _find_first_existing(raw_dataset_dir, PARTICLE_CS_CANDIDATES)
+    if known_path is not None:
+        return known_path
+
+    for filename in sorted(os.listdir(raw_dataset_dir)):
+        if not filename.endswith('_particles.cs'):
+            continue
+        lower_name = filename.lower()
+        if 'passthrough' in lower_name or 'selected' in lower_name:
+            continue
+        return os.path.join(raw_dataset_dir, filename)
+    return None
+
+
+def _find_passthrough_cs_path(raw_dataset_dir):
+    for filename in sorted(os.listdir(raw_dataset_dir)):
+        if any(filename.endswith(suffix) for suffix in PASSTHROUGH_CS_SUFFIXES):
+            return os.path.join(raw_dataset_dir, filename)
+    return None
 
 def _estimate_processed_sample_bytes(np_image_raw_sampled, resize, is_to_int8):
     """Estimate serialized LMDB payload size for processed particles."""
@@ -247,48 +288,28 @@ def window_mask(resolution, in_rad, out_rad=.99):
 
 
 def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
-    if raw_data_path.endswith('cs'):
+    raw_data_path = os.fspath(raw_data_path)
+    if raw_data_path.endswith('.cs'):
         raw_data_path = os.path.dirname(raw_data_path)
     new_csdata_path = os.path.join(raw_data_path, 'new_particles.cs')
     mrc_dir = raw_data_path
 
     # if not os.path.exists(new_csdata_path):
-    passthrough_particles_path = None
-    particles_cs_path = None
+    passthrough_particles_path = _find_passthrough_cs_path(raw_data_path)
+    particles_cs_path = _find_particle_cs_path(raw_data_path)
     other_cs_path = None
-    for filename in os.listdir(raw_data_path):
-        if filename.endswith('passthrough_particles.cs'):
-            passthrough_particles_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('_split_0.cs'):
-            passthrough_particles_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('extracted_particles.cs'):
-            particles_cs_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('imported_particles.cs'):
-            particles_cs_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('restacked_particles.cs'):
-            particles_cs_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('split_0000.cs'):
-            particles_cs_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('downsampled_particles.cs'):
-            particles_cs_path = os.path.join(raw_data_path, filename)
-        
-        elif filename.endswith('_particles.cs'):
-            particles_cs_path = os.path.join(raw_data_path, filename)
-
-        elif filename.endswith('.cs'):
+    for filename in sorted(os.listdir(raw_data_path)):
+        if filename.endswith('.cs'):
+            candidate_path = os.path.join(raw_data_path, filename)
+            if candidate_path in (passthrough_particles_path, particles_cs_path):
+                continue
             other_cs_path = os.path.join(raw_data_path, filename)
 
     if processed_cs_path is not None and os.path.exists(processed_cs_path):
         cs_data = Dataset.load(processed_cs_path)
     else:
         if not os.path.exists(new_csdata_path):
-            if passthrough_particles_path is not None:
+            if particles_cs_path is not None and passthrough_particles_path is not None:
                 cs_data = combine_cs_files_column(particles_cs_path, passthrough_particles_path)
             elif particles_cs_path is not None:
                 cs_data = Dataset.load(particles_cs_path)
@@ -297,8 +318,7 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
                 cs_data = Dataset.load(other_cs_path)
 
             else:
-                Exception(raw_data_path + ': corresponding  not exists!')
-                cs_data = None
+                raise FileNotFoundError(raw_data_path + ': corresponding .cs file does not exist!')
             if cs_data is not None:
                 cs_data.save(new_csdata_path)
         else:
