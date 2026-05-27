@@ -180,7 +180,8 @@ def _build_data_source_by_index(id_index_dict, id_data_source_dict=None):
     if id_data_source_dict is None:
         return {}
     data_source_by_index = {}
-    for dataset_id, index_list in id_index_dict.items():
+    for dataset_id, bucket in id_index_dict.items():
+        index_list = _index_ids_from_bucket(bucket)
         data_sources = _coerce_optional_sequence(id_data_source_dict.get(dataset_id), len(index_list))
         if data_sources is None:
             continue
@@ -399,6 +400,12 @@ def _chunk_sequence_keep_remainder(items, chunk_size):
     return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size) if len(items[i:i + chunk_size]) > 0]
 
 
+def _index_ids_from_bucket(bucket):
+    if isinstance(bucket, dict):
+        return list(bucket.get('id', []))
+    return list(bucket)
+
+
 class MyResampleSampler(Sampler):
     def __init__(self, data, id_index_dict_pos, id_index_dict_mid, id_index_dict_neg, resample_num_pos,
                  resample_num_neg, resample_num_mid,
@@ -513,7 +520,8 @@ class MyResampleSampler_pretrain(Sampler):
                  calculated_score_ratio=None, missing_score_ratio=None,
                  measured_score_ratio=None, snr_score_ratio=None,
                  id_data_source_dict=None,
-                 ptcls_ratio=None, mics_ratio=None, et_tilts_ratio=None, et_ptcls_ratio=None):
+                 ptcls_ratio=None, mics_ratio=None, et_tilts_ratio=None, et_ptcls_ratio=None,
+                 samples_per_protein=None):
         # if isinstance(shuffle_type, int):
         #     shuffle_type=int(shuffle_type/2)
 
@@ -535,6 +543,7 @@ class MyResampleSampler_pretrain(Sampler):
         self.id_data_source_dict = id_data_source_dict
         self.scores_bar = scores_bar
         self.id_protein_name_dict=id_protein_name_dict
+        self.samples_per_protein = samples_per_protein
         (
             self.calculated_score_ratio,
             self.missing_score_ratio,
@@ -555,28 +564,73 @@ class MyResampleSampler_pretrain(Sampler):
         self.batch_num=None
         self.num_processes=num_processes
 
-        indices = resample_from_id_index_dict(id_index_dict, max_number_per_sample, int(batch_size_all * 1.2),
-                                              int(shuffle_type / 2) if isinstance(shuffle_type, int) else shuffle_type,
-                                              shuffle_mix_up_ratio, self.my_seed, dataset_id_map,
-                                              bad_particles_ratio=bad_particles_ratio,
-                                              combine_same_class=combine_same_class,
-                                              only_mixup_bad_particles=only_mixup_bad_particles,
-                                              id_scores_dict=id_scores_dict,
-                                              id_used_default_score_dict=id_used_default_score_dict,
-                                              id_score_source_dict=id_score_source_dict,
-                                              scores_bar=scores_bar,
-                                              id_protein_name_dict=self.id_protein_name_dict,
-                                              calculated_score_ratio=self.calculated_score_ratio,
-                                              missing_score_ratio=self.missing_score_ratio,
-                                              measured_score_ratio=self.measured_score_ratio,
-                                              snr_score_ratio=self.snr_score_ratio,
-                                              id_data_source_dict=id_data_source_dict,
-                                              data_source_ratios=self.data_source_ratios
-                                              )
+        indices = self._resample_indices(self.my_seed, int(batch_size_all * 1.2))
         if isinstance(self.shuffle_type, int):
             combined_resampled_index_list, indices = self._build_batched_index_list(
                 indices, MICS_BATCH_DIVISOR_INIT)
+        elif self.shuffle_type == 'protein_balanced_batch':
+            indices = self._build_protein_balanced_indices(indices)
         self.indices = indices
+
+    def _resample_indices(self, seed, batch_size_all):
+        shuffle_type = self.shuffle_type
+        data_source_ratios = self.data_source_ratios
+        if shuffle_type == 'protein_balanced_batch':
+            shuffle_type = 'all'
+            data_source_ratios = _validate_data_source_ratio_inputs()
+        indices = resample_from_id_index_dict(
+            self.id_index_dict,
+            self.max_number_per_sample,
+            batch_size_all,
+            int(shuffle_type / 2) if isinstance(shuffle_type, int) else shuffle_type,
+            self.shuffle_mix_up_ratio,
+            seed,
+            self.dataset_id_map,
+            bad_particles_ratio=self.bad_particles_ratio,
+            combine_same_class=self.combine_same_class,
+            only_mixup_bad_particles=self.only_mixup_bad_particles,
+            id_scores_dict=self.id_scores_dict,
+            id_used_default_score_dict=self.id_used_default_score_dict,
+            id_score_source_dict=self.id_score_source_dict,
+            scores_bar=self.scores_bar,
+            id_protein_name_dict=self.id_protein_name_dict,
+            calculated_score_ratio=self.calculated_score_ratio,
+            missing_score_ratio=self.missing_score_ratio,
+            measured_score_ratio=self.measured_score_ratio,
+            snr_score_ratio=self.snr_score_ratio,
+            id_data_source_dict=self.id_data_source_dict,
+            data_source_ratios=data_source_ratios,
+        )
+        if self.shuffle_type == 'protein_balanced_batch':
+            if _has_active_data_source_ratios(self.data_source_ratios):
+                data_source_by_index = _build_data_source_by_index(self.id_index_dict, self.id_data_source_dict)
+                available_indices = [
+                    index
+                    for bucket in self.id_index_dict.values()
+                    for index in _index_ids_from_bucket(bucket)
+                ]
+                indices = _apply_data_source_ratios(
+                    indices,
+                    available_indices,
+                    data_source_by_index,
+                    self.data_source_ratios,
+                )
+            indices = self._group_indices_by_protein(indices)
+        return indices
+
+    def _group_indices_by_protein(self, indices):
+        index_to_group = {}
+        for group_id, bucket in self.id_index_dict.items():
+            for index in _index_ids_from_bucket(bucket):
+                index_to_group[index] = group_id
+
+        grouped_indices = {group_id: [] for group_id in self.id_index_dict.keys()}
+        for index in indices:
+            group_id = index_to_group.get(index)
+            if group_id is None:
+                continue
+            grouped_indices.setdefault(group_id, []).append(index)
+        return [group for group in grouped_indices.values() if len(group) > 0]
 
     # @profile(precision=4)
     def _build_batched_index_list(self, indices, mics_divisor):
@@ -615,27 +669,66 @@ class MyResampleSampler_pretrain(Sampler):
                         for idx in batch]
         return combined, flat_indices
 
+    def _build_protein_balanced_indices(self, grouped_indices):
+        if self.samples_per_protein is None:
+            raise ValueError('samples_per_protein must be set for protein_balanced_batch.')
+        samples_per_protein = int(self.samples_per_protein)
+        if samples_per_protein <= 0:
+            raise ValueError('samples_per_protein must be a positive integer.')
+        if self.num_processes <= 0:
+            raise ValueError('num_processes must be a positive integer.')
+        if self.batch_size_all % self.num_processes != 0:
+            raise ValueError('batch_size_all must be divisible by num_processes.')
+
+        local_batch_size = self.batch_size_all // self.num_processes
+        if local_batch_size % samples_per_protein != 0:
+            raise ValueError('Local batch size must be divisible by samples_per_protein.')
+        proteins_per_batch = local_batch_size // samples_per_protein
+        if proteins_per_batch <= 0:
+            raise ValueError('samples_per_protein cannot exceed the local batch size.')
+
+        chunks_by_group = []
+        for group in grouped_indices:
+            group = list(group)
+            random.shuffle(group)
+            chunks = [
+                group[i:i + samples_per_protein]
+                for i in range(0, len(group), samples_per_protein)
+                if len(group[i:i + samples_per_protein]) == samples_per_protein
+            ]
+            if chunks:
+                random.shuffle(chunks)
+                chunks_by_group.append(chunks)
+
+        batches = []
+        while any(chunks_by_group):
+            available_groups = [idx for idx, chunks in enumerate(chunks_by_group) if chunks]
+            if not available_groups:
+                break
+            selected_groups = random.sample(
+                available_groups,
+                min(proteins_per_batch, len(available_groups)),
+            )
+            batch = []
+            for group_idx in selected_groups:
+                batch.extend(chunks_by_group[group_idx].pop())
+
+            while len(batch) < local_batch_size:
+                fill_groups = [idx for idx, chunks in enumerate(chunks_by_group) if chunks]
+                if not fill_groups:
+                    break
+                fill_group = random.choice(fill_groups)
+                batch.extend(chunks_by_group[fill_group].pop())
+
+            if len(batch) == local_batch_size:
+                batches.append(batch)
+
+        random.shuffle(batches)
+        self.batch_num = None
+        return [index for batch in batches for index in batch]
+
     def __iter__(self):
-        indices = resample_from_id_index_dict(self.id_index_dict, self.max_number_per_sample,
-                                              int(1.2 * self.batch_size_all),
-                                              int(self.shuffle_type / 2) if isinstance(self.shuffle_type,
-                                                                                       int) else self.shuffle_type,
-                                              self.shuffle_mix_up_ratio, self.my_seed,
-                                              self.dataset_id_map, bad_particles_ratio=self.bad_particles_ratio,
-                                              combine_same_class=self.combine_same_class,
-                                              only_mixup_bad_particles=self.only_mixup_bad_particles,
-                                              id_scores_dict=self.id_scores_dict,
-                                              id_used_default_score_dict=self.id_used_default_score_dict,
-                                              id_score_source_dict=self.id_score_source_dict,
-                                              scores_bar=self.scores_bar,
-                                              id_protein_name_dict=self.id_protein_name_dict,
-                                              calculated_score_ratio=self.calculated_score_ratio,
-                                              missing_score_ratio=self.missing_score_ratio,
-                                              measured_score_ratio=self.measured_score_ratio,
-                                              snr_score_ratio=self.snr_score_ratio,
-                                              id_data_source_dict=self.id_data_source_dict,
-                                              data_source_ratios=self.data_source_ratios
-                                              )
+        indices = self._resample_indices(self.my_seed, int(1.2 * self.batch_size_all))
         self.indices = indices
         self.my_seed += 1
         if isinstance(self.shuffle_type, int):
@@ -647,6 +740,8 @@ class MyResampleSampler_pretrain(Sampler):
                 yield batch
 
         else:
+            if self.shuffle_type == 'protein_balanced_batch':
+                self.indices = self._build_protein_balanced_indices(indices)
             for idx in self.indices:
                 yield idx
 
