@@ -24,6 +24,11 @@ PASSTHROUGH_CS_SUFFIXES = (
     'passthrough_particles.cs',
     '_split_0.cs',
 )
+STACK_FILE_EXTENSIONS = ('.mrcs', '.mrc')
+
+
+def _is_stack_file(path):
+    return os.fspath(path).endswith(STACK_FILE_EXTENSIONS)
 
 
 def _find_first_existing(raw_dataset_dir, names):
@@ -291,6 +296,9 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
     raw_data_path = os.fspath(raw_data_path)
     if raw_data_path.endswith('.cs'):
         raw_data_path = os.path.dirname(raw_data_path)
+    if _is_stack_file(raw_data_path):
+        return None, os.path.dirname(raw_data_path)
+
     new_csdata_path = os.path.join(raw_data_path, 'new_particles.cs')
     mrc_dir = raw_data_path
 
@@ -318,7 +326,7 @@ def raw_csdata_process_from_cryosparc_dir(raw_data_path,processed_cs_path=None):
                 cs_data = Dataset.load(other_cs_path)
 
             else:
-                raise FileNotFoundError(raw_data_path + ': corresponding .cs file does not exist!')
+                cs_data = None
             if cs_data is not None:
                 cs_data.save(new_csdata_path)
         else:
@@ -395,7 +403,15 @@ def combine_cs_files_column(cs_path1, cs_path2):
     # cs2star(save_path,save_path.replace('.cs','.star'))
 
 
-def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True, num_processes=8, chunksize=0):
+def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True,
+                        save_raw_data=False, save_FT_data=False, use_lmdb=True,
+                        num_processes=8, chunksize=0):
+    if not use_lmdb:
+        raise NotImplementedError('raw_data_preprocess currently requires use_lmdb=True')
+
+    raw_dataset_dir = os.fspath(raw_dataset_dir)
+    dataset_save_dir = os.fspath(dataset_save_dir)
+
     if not os.path.exists(dataset_save_dir):
         os.makedirs(dataset_save_dir)
 
@@ -449,7 +465,14 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         # mrcs_names_list_process=mrc_list
         new_cs_data = None
         # all files end with .mrcs or .mrc in mrc_dir
-        mrcs_names_list_process = [filename for filename in os.listdir(mrc_dir) if filename.endswith('.mrcs') or filename.endswith('.mrc')]
+        if _is_stack_file(raw_dataset_dir):
+            mrcs_names_list_process = [os.path.basename(raw_dataset_dir)]
+        else:
+            mrcs_names_list_process = [
+                filename
+                for filename in sorted(os.listdir(mrc_dir))
+                if _is_stack_file(filename)
+            ]
 
     tmp_data_lmdb_path = os.path.join(dataset_save_dir, 'lmdb_data', raw_dataset_dir.split('/')[-1])
     tmp_data_save_path = dataset_save_dir
