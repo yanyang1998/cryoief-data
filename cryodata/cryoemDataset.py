@@ -21,6 +21,8 @@ MICROGRAPH_SIZE_THRESHOLD = 384
 LMDB_REFERENCE_MANIFEST_FILENAME = 'lmdb_reference_manifest.json'
 CALCULATED_SCORE_SOURCES = frozenset((0, 3))
 DATA_SOURCE_LABEL_FILENAME = 'labels_data_source.data'
+SOURCE_MRCS_GROUP_ID_FILENAME = 'source_mrcs_group_id.data'
+SOURCE_MRCS_GROUP_KEY_FILENAME = 'source_mrcs_group_key.data'
 DATA_SOURCE_PTCLS = 'ptcls'
 DATA_SOURCE_MICS = 'mics'
 DATA_SOURCE_ET_TILTS = 'et_tilts'
@@ -82,6 +84,29 @@ def _normalize_data_source_labels(data_source_values, expected_length, data_path
             f"Supported values: {list(SUPPORTED_DATA_SOURCE_TYPES)}."
         )
     return labels
+
+
+def _normalize_source_mrcs_group_ids(group_id_values, expected_length, data_path):
+    if group_id_values is None:
+        return None
+
+    group_ids = list(group_id_values)
+    if len(group_ids) != expected_length:
+        raise ValueError(
+            f"{SOURCE_MRCS_GROUP_ID_FILENAME} length mismatch: expected {expected_length}, "
+            f"found {len(group_ids)} in {data_path}."
+        )
+
+    normalized_group_ids = []
+    for index, group_id in enumerate(group_ids):
+        try:
+            normalized_group_ids.append(int(group_id))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{SOURCE_MRCS_GROUP_ID_FILENAME} contains non-integer group id "
+                f"at index {index}: {group_id!r}."
+            )
+    return normalized_group_ids
 
 
 class MyEmFile(object):
@@ -294,6 +319,20 @@ class CryoMetaData(MyEmFile):
             self.length,
             data_path,
         )
+        source_mrcs_group_id_raw = None
+        if os.path.exists(os.path.join(data_path, SOURCE_MRCS_GROUP_ID_FILENAME)):
+            with open(os.path.join(data_path, SOURCE_MRCS_GROUP_ID_FILENAME), 'rb') as filehandle:
+                source_mrcs_group_id_raw = pickle.load(filehandle)
+        self.source_mrcs_group_id = _normalize_source_mrcs_group_ids(
+            source_mrcs_group_id_raw,
+            self.length,
+            data_path,
+        )
+
+        self.source_mrcs_group_key = None
+        if os.path.exists(os.path.join(data_path, SOURCE_MRCS_GROUP_KEY_FILENAME)):
+            with open(os.path.join(data_path, SOURCE_MRCS_GROUP_KEY_FILENAME), 'rb') as filehandle:
+                self.source_mrcs_group_key = pickle.load(filehandle)
 
         # with open(path_out + 'output_tif_select_label.data', 'rb') as filehandle:
         #     self.tifs_selection_label = pickle.load(filehandle)
@@ -675,9 +714,13 @@ class CryoEMDataset(Dataset):
         self.labels_score_source = metadata.labels_score_source
         self.labels_used_default_score = metadata.labels_used_default_score
         self.labels_data_source = metadata.labels_data_source
+        self.source_mrcs_group_id = getattr(metadata, 'source_mrcs_group_id', None)
+        self.source_mrcs_group_key = getattr(metadata, 'source_mrcs_group_key', None)
+        self.source_mrcs_group_index = self._build_source_mrcs_group_index()
 
         self.slice_setting = slice_setting
         self.mix_pos_setting = mix_pos_setting
+        self.et_pose_search_N = self._get_et_pose_search_N()
         self.in_chans = in_chans
         self.needs_aug2 = needs_aug2
 
@@ -731,6 +774,28 @@ class CryoEMDataset(Dataset):
         for index, protein_id in enumerate(self.protein_id_list):
             id_index_dict.setdefault(protein_id, []).append(index)
         return id_index_dict
+
+    def _build_source_mrcs_group_index(self):
+        if self.source_mrcs_group_id is None:
+            return None
+        source_mrcs_group_index = {}
+        for index, group_id in enumerate(self.source_mrcs_group_id):
+            source_mrcs_group_index.setdefault(group_id, []).append(index)
+        return source_mrcs_group_index
+
+    def _get_et_pose_search_N(self):
+        if self.mix_pos_setting is None:
+            return None
+        value = self.mix_pos_setting.get('et_pose_search_N', self.mix_pos_setting.get('pose_search_N'))
+        if value is None:
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            raise ValueError('et_pose_search_N must be a positive integer.')
+        if value <= 0:
+            raise ValueError('et_pose_search_N must be a positive integer.')
+        return value
 
     def _build_protein_min_index(self):
         protein_min_index = {}
@@ -935,7 +1000,7 @@ class CryoEMDataset(Dataset):
             else:
                 if self.random_rotate_transform is not None:
                     is_random_rotate_transform = True
-                item2, weight, is_mix_pos = self.get_item2(item)
+                item2, weight, is_mix_pos = self.get_item2(item, label_data_source=label_data_source)
                 if item2 is not None:
                     mrcdata2 = self.get_mrcdata(item=item2)
                 else:
@@ -1017,10 +1082,12 @@ class CryoEMDataset(Dataset):
 
 
 
-    def get_item2(self, item):
+    def get_item2(self, item, label_data_source=None):
         item2 = None
         weight = 1
         is_mix_pos = False
+        if label_data_source is None and self.labels_data_source is not None:
+            label_data_source = self.labels_data_source[item]
         if self.weight_for_contrastive_classification_label > 0:
             if random.random() < self.weight_for_contrastive_classification_label:
                 if self.labels_classification[item] == 1:
@@ -1029,34 +1096,97 @@ class CryoEMDataset(Dataset):
                     item2 = np.random.choice(self.negative_items)
         elif self.mix_pos_setting is not None and self.mix_pos_setting['p'] > 0 and self.pose_id_map is not None:
             if random.random() < self.mix_pos_setting['p']:
-                # protein_id = self.protein_id_list[item]
-                # item_list=self.id_index_dict.get(protein_id, [])
-                # if len(item_list) > 1:
-                #     item2 = random.choice(item_list)
-                # protein_name=self.protein_id_dict_reverse[protein_id]
-                # self.pose_indices.load(os.path.join(self.processed_data_path, 'pose_data', protein_name + '_pose.ann'))
-                # nearest=self.pose_indices.get_nns_by_item(item-min(item_list), int(len(item_list)/20),include_distances=False)
-                # item2 = random.choice(nearest[1:])+ min(item_list)
-                nearest, min_id, protein_name, pose_items_id, item1_pose_id = self.get_nearest_item(item)
-                if nearest is not None and len(nearest) > 1:
-                    item2_pose_id = weighted_random_choice_linear(nearest[1:], with_weight=False)
-                    item2 = pose_items_id[item2_pose_id] + min_id
+                if label_data_source == DATA_SOURCE_ET_PTCLS:
+                    item2, weight = self.get_nearest_item_same_mrcs(item)
+                    is_mix_pos = item2 is not None
+                else:
+                    # protein_id = self.protein_id_list[item]
+                    # item_list=self.id_index_dict.get(protein_id, [])
+                    # if len(item_list) > 1:
+                    #     item2 = random.choice(item_list)
+                    # protein_name=self.protein_id_dict_reverse[protein_id]
+                    # self.pose_indices.load(os.path.join(self.processed_data_path, 'pose_data', protein_name + '_pose.ann'))
+                    # nearest=self.pose_indices.get_nns_by_item(item-min(item_list), int(len(item_list)/20),include_distances=False)
+                    # item2 = random.choice(nearest[1:])+ min(item_list)
+                    nearest, min_id, protein_name, pose_items_id, item1_pose_id = self.get_nearest_item(item)
+                    if nearest is not None and len(nearest) > 1:
+                        item2_pose_id = weighted_random_choice_linear(nearest[1:], with_weight=False)
+                        item2 = pose_items_id[item2_pose_id] + min_id
 
-                    # if item-min(item_list)<0:
-                    #     print('item is less than min(item.list): ' + str(item) + ' ' + str(min(item_list)))
-                    #     print('protein_name: ' + protein_name)
-                    # if item2-min(item_list)<0:
-                    #     print('item2 is less than min(item.list): ' + str(item2) + ' ' + str(min(item_list)))
-                    #     print('protein_name: ' + protein_name)
-                    weight = sigmoid(self.mix_pos_setting['sigma'] * (
-                            (3.5 - self.pose_indices.get_distance(item1_pose_id, item2_pose_id)) / 3.5
-                            - self.mix_pos_setting['bias']))
-                    self.pose_indices.unload()
-                    is_mix_pos = True
+                        # if item-min(item_list)<0:
+                        #     print('item is less than min(item.list): ' + str(item) + ' ' + str(min(item_list)))
+                        #     print('protein_name: ' + protein_name)
+                        # if item2-min(item_list)<0:
+                        #     print('item2 is less than min(item.list): ' + str(item2) + ' ' + str(min(item_list)))
+                        #     print('protein_name: ' + protein_name)
+                        weight = sigmoid(self.mix_pos_setting['sigma'] * (
+                                (3.5 - self.pose_indices.get_distance(item1_pose_id, item2_pose_id)) / 3.5
+                                - self.mix_pos_setting['bias']))
+                        self.pose_indices.unload()
+                        is_mix_pos = True
 
                 # if protein_name=='11307_J504_good':
                 #     pass
         return item2, float(weight), is_mix_pos
+
+    def get_nearest_item_same_mrcs(self, item, N=None):
+        if N is None:
+            N = self.et_pose_search_N
+        if N is None:
+            return None, 1
+        N = int(N)
+        if N <= 0:
+            raise ValueError('et_pose_search_N must be a positive integer.')
+        if self.source_mrcs_group_id is None or self.source_mrcs_group_index is None:
+            return None, 1
+        if item >= len(self.source_mrcs_group_id):
+            return None, 1
+
+        protein_id = self.protein_id_list[item]
+        item_list = self.id_index_dict.get(protein_id, [])
+        min_id = self.protein_min_index.get(protein_id, min(item_list) if item_list else 0)
+        protein_pose_map = self.pose_id_map.get(protein_id) if isinstance(self.pose_id_map, dict) else None
+        if protein_pose_map is None:
+            return None, 1
+
+        protein_name = self.protein_id_dict_reverse[protein_id]
+        pose_file_path = os.path.join(self.processed_data_path, 'pose_data', protein_name + '_pose.ann')
+        if not os.path.exists(pose_file_path):
+            return None, 1
+
+        local_item_id = item - min_id
+        if local_item_id not in protein_pose_map:
+            return None, 1
+        item1_pose_id = protein_pose_map[local_item_id]
+
+        group_id = self.source_mrcs_group_id[item]
+        same_group_items = self.source_mrcs_group_index.get(group_id, [])
+        candidate_distances = []
+        self.pose_indices.load(pose_file_path)
+        try:
+            for candidate_item in same_group_items:
+                if candidate_item == item:
+                    continue
+                if self.protein_id_list[candidate_item] != protein_id:
+                    continue
+                candidate_local_id = candidate_item - min_id
+                if candidate_local_id not in protein_pose_map:
+                    continue
+                candidate_pose_id = protein_pose_map[candidate_local_id]
+                distance = self.pose_indices.get_distance(item1_pose_id, candidate_pose_id)
+                candidate_distances.append((distance, candidate_item, candidate_pose_id))
+        finally:
+            self.pose_indices.unload()
+
+        if not candidate_distances:
+            return None, 1
+
+        candidate_distances.sort(key=lambda x: x[0])
+        selected_distance, selected_item, _ = random.choice(candidate_distances[:N])
+        weight = sigmoid(self.mix_pos_setting['sigma'] * (
+                (3.5 - selected_distance) / 3.5
+                - self.mix_pos_setting['bias']))
+        return selected_item, float(weight)
 
     def get_nearest_item(self, item, N=None, pose_divide=None):
 
