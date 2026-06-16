@@ -13,6 +13,10 @@ import gc
 logger = logging.getLogger(__name__)
 STACK_FILE_EXTENSIONS = ('.mrcs', '.mrc')
 STACK_SUBDIR_CANDIDATES = ('mics', 'tiltseries')
+LMDB_MIN_PARTICLE_CHUNK_SIZE = 32
+LMDB_MAX_PARTICLE_CHUNK_SIZE = 512
+LMDB_TARGET_CHUNK_BYTES = 256 * 1024 * 1024
+MAX_LMDB_MAP_RESIZE_ATTEMPTS = 6
 
 
 def _open_lmdb_set(base_path, map_size, generate_processed_data, save_raw_data, generate_ft_data):
@@ -34,10 +38,222 @@ def _write_to_lmdb(envs, processed_data_by_type, item_index, num_items):
     """Write a batch of processed items into their respective LMDB environments."""
     for data_type, data_list in processed_data_by_type.items():
         if data_type in envs:
-            with envs[data_type].begin(write=True) as txn:
+            _write_batch_with_map_resize(
+                envs[data_type], item_index, data_list, num_items, data_type)
+
+
+def _write_batch_with_map_resize(env, item_index, data_list, num_items, data_type,
+                                 max_resize_attempts=MAX_LMDB_MAP_RESIZE_ATTEMPTS):
+    if not data_list:
+        return
+
+    for attempt in range(max_resize_attempts + 1):
+        try:
+            with env.begin(write=True) as txn:
                 for i in range(num_items):
                     key = f"{item_index + i}".encode()
                     txn.put(key, data_list[i])
+            return
+        except lmdb.MapFullError as exc:
+            if attempt >= max_resize_attempts:
+                raise RuntimeError(
+                    f"LMDB map resize failed for {data_type} after "
+                    f"{max_resize_attempts + 1} attempts."
+                ) from exc
+            old_map_size = env.info()['map_size']
+            new_map_size = old_map_size * 2
+            print(
+                f"WARNING: LMDB map full for {data_type}. Growing map size from "
+                f"{old_map_size / (1024 ** 3):.2f}GB to "
+                f"{new_map_size / (1024 ** 3):.2f}GB and retrying."
+            )
+            env.set_mapsize(new_map_size)
+
+
+def _zero_mean_std_stats():
+    return {
+        'raw': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0},
+        'processed': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0},
+        'FT': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0}
+    }
+
+
+def _count_particles_in_stack(stack_path):
+    header = mrc.parse_header(stack_path)
+    return int(header.fields['nz'])
+
+
+def _load_mrc_particle_slice(data_path, particle_start=0, particle_stop=None):
+    header = mrc.parse_header(data_path)
+    fields = header.fields
+    nx = int(fields['nx'])
+    ny = int(fields['ny'])
+    nz = int(fields['nz'])
+    extbytes = int(fields.get('next', 0) or 0)
+    dtype = np.dtype(header.dtype)
+
+    if nx <= 0 or ny <= 0 or nz <= 0:
+        raise ValueError(f"Invalid MRC dimensions for {data_path}: {(nz, ny, nx)}")
+
+    particle_start = max(0, int(particle_start))
+    particle_stop = nz if particle_stop is None else min(int(particle_stop), nz)
+    if particle_start >= particle_stop:
+        return np.empty((0, ny, nx), dtype=dtype), header
+
+    expected_bytes = int(1024 + extbytes + nx * ny * nz * dtype.itemsize)
+    actual_bytes = int(os.path.getsize(data_path))
+    if actual_bytes < expected_bytes:
+        raise ValueError(
+            f"Invalid MRC stack {data_path}: truncated_payload "
+            f"(actual_bytes={actual_bytes}, expected_bytes={expected_bytes}, "
+            f"shape={(nz, ny, nx)}, dtype={dtype})"
+        )
+
+    offset = 1024 + extbytes + particle_start * ny * nx * dtype.itemsize
+    particle_count = particle_stop - particle_start
+    np_image_raw = np.memmap(
+        data_path,
+        dtype=dtype,
+        mode='r',
+        offset=offset,
+        shape=(particle_count, ny, nx),
+    )
+    return np_image_raw, header
+
+
+def _estimate_lmdb_particle_working_set_bytes(source_side, resize, raw_resize,
+                                              generate_processed_data,
+                                              generate_ft_data, save_raw_data):
+    source_side = max(1, int(source_side))
+    resize = max(1, int(resize or source_side))
+    raw_side = max(1, int(raw_resize or source_side))
+
+    estimated_bytes = source_side * source_side * 4
+    if generate_processed_data:
+        estimated_bytes += resize * resize * 5
+    if save_raw_data:
+        estimated_bytes += raw_side * raw_side * 4
+    if generate_ft_data:
+        estimated_bytes += raw_side * raw_side * 12
+    return max(1, int(estimated_bytes))
+
+
+def _compute_adaptive_lmdb_chunk_size(total_particles, source_side, resize, raw_resize,
+                                      generate_processed_data, generate_ft_data,
+                                      save_raw_data):
+    total_particles = max(1, int(total_particles))
+    estimated_bytes_per_particle = _estimate_lmdb_particle_working_set_bytes(
+        source_side, resize, raw_resize, generate_processed_data,
+        generate_ft_data, save_raw_data)
+    adaptive_chunk_size = LMDB_TARGET_CHUNK_BYTES // estimated_bytes_per_particle
+    adaptive_chunk_size = max(LMDB_MIN_PARTICLE_CHUNK_SIZE, int(adaptive_chunk_size))
+    adaptive_chunk_size = min(LMDB_MAX_PARTICLE_CHUNK_SIZE, adaptive_chunk_size)
+    adaptive_chunk_size = min(total_particles, adaptive_chunk_size)
+    return max(1, adaptive_chunk_size)
+
+
+def _normalize_lmdb_task(args):
+    if isinstance(args, dict):
+        task = dict(args)
+    else:
+        idx, data_path, resize, raw_resize, is_to_int8, window, window_r, \
+            generate_processed_data, generate_ft_data, save_raw_data, num_resample_mrcs = args
+        total_particles = _count_particles_in_stack(data_path)
+        task = {
+            'task_index': idx,
+            'original_idx': idx,
+            'stack_id': idx,
+            'data_path': data_path,
+            'stack_name': os.path.basename(data_path),
+            'protein_name': os.path.normpath(data_path).split(os.sep)[-3],
+            'resize': resize,
+            'raw_resize': raw_resize,
+            'is_to_int8': is_to_int8,
+            'window': window,
+            'window_r': window_r,
+            'generate_processed_data': generate_processed_data,
+            'generate_ft_data': generate_ft_data,
+            'save_raw_data': save_raw_data,
+            'num_resample_mrcs': num_resample_mrcs,
+            'particle_start': 0,
+            'particle_stop': total_particles,
+            'total_particles': total_particles,
+        }
+
+    total_particles = int(task.get('total_particles') or _count_particles_in_stack(task['data_path']))
+    task.setdefault('task_index', int(task.get('original_idx', 0)))
+    task.setdefault('original_idx', int(task['task_index']))
+    task.setdefault('stack_id', int(task['original_idx']))
+    task.setdefault('stack_name', os.path.basename(task['data_path']))
+    task.setdefault('protein_name', os.path.normpath(task['data_path']).split(os.sep)[-3])
+    task.setdefault('particle_start', 0)
+    task.setdefault('particle_stop', total_particles)
+    task.setdefault('num_resample_mrcs', None)
+    task['particle_start'] = int(task['particle_start'])
+    task['particle_stop'] = int(task['particle_stop'])
+    task['total_particles'] = total_particles
+    return task
+
+
+def _build_lmdb_tasks(image_path_list, resize, raw_resize, is_to_int8, window, window_r,
+                      generate_processed_data, generate_ft_data, save_raw_data,
+                      num_resample_mrcs_per_dataset=None, particle_chunk_size=None):
+    if particle_chunk_size is not None:
+        particle_chunk_size = int(particle_chunk_size)
+        if particle_chunk_size <= 0:
+            raise ValueError('particle_chunk_size must be a positive integer or None.')
+
+    tasks = []
+    for original_idx, data_path in enumerate(image_path_list):
+        header = mrc.parse_header(data_path)
+        total_particles = int(header.fields['nz'])
+        ny = int(header.fields['ny'])
+        nx = int(header.fields['nx'])
+        source_side = min(ny, nx)
+        if total_particles <= 0:
+            continue
+
+        if particle_chunk_size is None:
+            chunk_particle_count = _compute_adaptive_lmdb_chunk_size(
+                total_particles, source_side, resize, raw_resize,
+                generate_processed_data, generate_ft_data, save_raw_data)
+        else:
+            chunk_particle_count = min(total_particles, particle_chunk_size)
+
+        sample_target = None
+        if num_resample_mrcs_per_dataset:
+            sample_target = min(total_particles, int(num_resample_mrcs_per_dataset[original_idx]))
+
+        for chunk_index, particle_start in enumerate(range(0, total_particles, chunk_particle_count)):
+            particle_stop = min(particle_start + chunk_particle_count, total_particles)
+            chunk_sample_target = None
+            if sample_target is not None:
+                chunk_sample_target = (
+                    (particle_stop * sample_target) // total_particles
+                    - (particle_start * sample_target) // total_particles
+                )
+            tasks.append({
+                'task_index': len(tasks),
+                'original_idx': original_idx,
+                'stack_id': original_idx,
+                'chunk_index': chunk_index,
+                'data_path': data_path,
+                'stack_name': os.path.basename(data_path),
+                'protein_name': os.path.normpath(data_path).split(os.sep)[-3],
+                'resize': resize,
+                'raw_resize': raw_resize,
+                'is_to_int8': is_to_int8,
+                'window': window,
+                'window_r': window_r,
+                'generate_processed_data': generate_processed_data,
+                'generate_ft_data': generate_ft_data,
+                'save_raw_data': save_raw_data,
+                'num_resample_mrcs': chunk_sample_target,
+                'particle_start': particle_start,
+                'particle_stop': particle_stop,
+                'total_particles': total_particles,
+            })
+    return tasks
 
 
 def create_lmdb_dataset(image_path_list, save_data_path, map_size,
@@ -47,79 +263,85 @@ def create_lmdb_dataset(image_path_list, save_data_path, map_size,
                         window=True, window_r=0.85,
                         generate_processed_data=True, generate_ft_data=False, save_raw_data=False,
 
-                        num_resample_mrcs_per_dataset=None):
+                        num_resample_mrcs_per_dataset=None, particle_chunk_size=None):
     # 全局元数据变量 (所有模式下共用)
     path_id_data_list, protein_id_list, protein_id_dict, mean_std_states_sum = [], [], {}, {}
     if num_processes is None: num_processes = 16
 
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        protein_id_counter = 0
-        tasks = [(idx, data_path, resize, raw_resize, is_to_int8, window, window_r,
-                  generate_processed_data, generate_ft_data, save_raw_data,
-                  num_resample_mrcs_per_dataset[idx] if num_resample_mrcs_per_dataset else None)
-                 for idx, data_path in enumerate(image_path_list)]
-        print(f"Starting parallel processing of {len(tasks)} source files with {num_processes} workers...")
+    protein_id_counter = 0
+    tasks = _build_lmdb_tasks(
+        image_path_list, resize, raw_resize, is_to_int8, window, window_r,
+        generate_processed_data, generate_ft_data, save_raw_data,
+        num_resample_mrcs_per_dataset=num_resample_mrcs_per_dataset,
+        particle_chunk_size=particle_chunk_size)
+    print(
+        f"Starting parallel processing of {len(image_path_list)} source files "
+        f"as {len(tasks)} chunk tasks with {num_processes} workers...")
 
-        results_buffer = {}
-        next_to_process = 0
+    # ==============================================================================
+    # MODIFIED: 根据 split_by_protein 开关选择不同的写入逻辑
+    # ==============================================================================
+    if split_by_protein:
+        print("INFO: LMDB datasets will be split by protein name.")
+        # 按蛋白分割的模式下，动态管理环境和计数器
+        protein_envs = {}
+        protein_item_counters = {}
+    else:
+        print("INFO: Creating a single combined LMDB dataset.")
+        global_envs = _open_lmdb_set(
+            os.path.join(save_data_path, 'lmdb_data'), map_size,
+            generate_processed_data, save_raw_data, generate_ft_data)
+        global_item_index = 0
 
-        # ==============================================================================
-        # MODIFIED: 根据 split_by_protein 开关选择不同的写入逻辑
-        # ==============================================================================
-        if split_by_protein:
-            print("INFO: LMDB datasets will be split by protein name.")
-            # 按蛋白分割的模式下，动态管理环境和计数器
-            protein_envs = {}
-            protein_item_counters = {}
-        else:
-            print("INFO: Creating a single combined LMDB dataset.")
-            global_envs = _open_lmdb_set(
-                os.path.join(save_data_path, 'lmdb_data'), map_size,
-                generate_processed_data, save_raw_data, generate_ft_data)
-            global_item_index = 0
+    def _process_result(result, task):
+        nonlocal protein_id_counter
+        nonlocal global_item_index
+        _, path_id_data, processed_data_by_type, mean_std_stats = result
+        protein_name = task['protein_name']
 
-        with tqdm(total=len(tasks), desc="Processing source files") as pbar:
-            results_iterator = pool.imap_unordered(lmdb_process_item, tasks, chunksize=chunksize)
-            for result in results_iterator:
-                original_idx = result[0]
-                results_buffer[original_idx] = result
+        if path_id_data and mean_std_stats is not None:
+            num_items_in_batch = len(path_id_data)
 
-                while next_to_process in results_buffer:
-                    _, path_id_data, processed_data_by_type, mean_std_stats = results_buffer.pop(next_to_process)
-                    protein_name = tasks[next_to_process][1].split('/')[-3]
+            # --- Write branch ---
+            if split_by_protein:
+                if protein_name not in protein_envs:
+                    protein_base_path = os.path.join(save_data_path, 'lmdb_data', protein_name)
+                    protein_envs[protein_name] = _open_lmdb_set(
+                        protein_base_path, map_size,
+                        generate_processed_data, save_raw_data, generate_ft_data)
+                    protein_item_counters[protein_name] = 0
+                current_item_index = protein_item_counters[protein_name]
+                _write_to_lmdb(protein_envs[protein_name], processed_data_by_type,
+                               current_item_index, num_items_in_batch)
+                protein_item_counters[protein_name] += num_items_in_batch
+            else:
+                _write_to_lmdb(global_envs, processed_data_by_type,
+                               global_item_index, num_items_in_batch)
+                global_item_index += num_items_in_batch
 
-                    if path_id_data and mean_std_stats is not None:
-                        num_items_in_batch = len(path_id_data)
+            # --- 全局元数据聚合 (所有模式下共用) ---
+            path_id_data_list.extend(path_id_data)
+            if protein_name not in protein_id_dict:
+                protein_id_dict[protein_name] = protein_id_counter
+                mean_std_states_sum[protein_name] = []
+                protein_id_counter += 1
+            current_protein_id = protein_id_dict[protein_name]
+            protein_id_list.extend([current_protein_id] * len(path_id_data))
+            mean_std_states_sum[protein_name].append(mean_std_stats)
 
-                        # --- Write branch ---
-                        if split_by_protein:
-                            if protein_name not in protein_envs:
-                                protein_base_path = os.path.join(save_data_path, 'lmdb_data', protein_name)
-                                protein_envs[protein_name] = _open_lmdb_set(
-                                    protein_base_path, map_size,
-                                    generate_processed_data, save_raw_data, generate_ft_data)
-                                protein_item_counters[protein_name] = 0
-                            current_item_index = protein_item_counters[protein_name]
-                            _write_to_lmdb(protein_envs[protein_name], processed_data_by_type,
-                                           current_item_index, num_items_in_batch)
-                            protein_item_counters[protein_name] += num_items_in_batch
-                        else:
-                            _write_to_lmdb(global_envs, processed_data_by_type,
-                                           global_item_index, num_items_in_batch)
-                            global_item_index += num_items_in_batch
-
-                        # --- 全局元数据聚合 (所有模式下共用) ---
-                        path_id_data_list.extend(path_id_data)
-                        if protein_name not in protein_id_dict:
-                            protein_id_dict[protein_name] = protein_id_counter
-                            mean_std_states_sum[protein_name] = []
-                            protein_id_counter += 1
-                        current_protein_id = protein_id_dict[protein_name]
-                        protein_id_list.extend([current_protein_id] * len(path_id_data))
-                        mean_std_states_sum[protein_name].append(mean_std_stats)
-
+    if num_processes and num_processes > 1:
+        with multiprocessing.Pool(processes=num_processes) as pool:
+            with tqdm(total=len(tasks), desc="Processing source chunks") as pbar:
+                results_iterator = pool.imap(lmdb_process_item, tasks, chunksize=chunksize)
+                for task, result in zip(tasks, results_iterator):
+                    _process_result(result, task)
                     pbar.update(1)
-                    next_to_process += 1
+    else:
+        with tqdm(total=len(tasks), desc="Processing source chunks") as pbar:
+            for task in tasks:
+                result = lmdb_process_item(task)
+                _process_result(result, task)
+                pbar.update(1)
 
     # --- 关闭所有LMDB环境 ---
     if split_by_protein:
@@ -169,19 +391,31 @@ def create_lmdb_dataset(image_path_list, save_data_path, map_size,
 
 
 def lmdb_process_item(args):
-    idx, data_path, resize, raw_resize, is_to_int8, window, window_r, \
-        generate_processed_data, generate_ft_data, save_raw_data, num_resample_mrcs = args
+    task = _normalize_lmdb_task(args)
+    idx = task['task_index']
+    data_path = task['data_path']
+    resize = task['resize']
+    raw_resize = task['raw_resize']
+    is_to_int8 = task['is_to_int8']
+    window = task['window']
+    window_r = task['window_r']
+    generate_processed_data = task['generate_processed_data']
+    generate_ft_data = task['generate_ft_data']
+    save_raw_data = task['save_raw_data']
+    num_resample_mrcs = task['num_resample_mrcs']
+    particle_start = task['particle_start']
+    particle_stop = task['particle_stop']
     try:
         # with mrcfile.open(data_path, permissive=True) as mrc:
         #     np_image_raw = mrc.data.astype(np.float32)
-        np_image_raw, _ = mrc.parse_mrc(data_path)
-        np_image_raw = np_image_raw.astype(np.float32)
+        np_image_raw, _ = _load_mrc_particle_slice(data_path, particle_start, particle_stop)
+        np_image_raw = np.asarray(np_image_raw, dtype=np.float32)
         n_total = np_image_raw.shape[0]
 
         np_image_processed = None
         if generate_processed_data:
             processed_mrcs = np_image_raw
-            if np_image_raw.shape[1] != resize:
+            if resize is not None and np_image_raw.shape[1] != resize:
                 processed_mrcs = mrcs_resize(processed_mrcs, resize, resize)
             if is_to_int8:
                 processed_mrcs = mrcs_to_int8(processed_mrcs)
@@ -217,11 +451,7 @@ def lmdb_process_item(args):
             np_image_FT = np_image_FT.astype(np.float32)
             del ft_input_stack
 
-        mean_std_stats = {
-            'raw': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0},
-            'processed': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0},
-            'FT': {'sum': 0.0, 'sq_sum': 0.0, 'count': 0}
-        }
+        mean_std_stats = _zero_mean_std_stats()
         if num_resample_mrcs is not None and n_total > 0:
             sample_size = min(n_total, num_resample_mrcs)
             resample_id = np.random.choice(n_total, size=sample_size, replace=False)
@@ -258,7 +488,7 @@ def lmdb_process_item(args):
                     pickle.dumps(np_image_raw_processed[i], protocol=pickle.HIGHEST_PROTOCOL))
             if generate_ft_data:
                 processed_data_by_type['FT'].append(pickle.dumps(np_image_FT[i], protocol=pickle.HIGHEST_PROTOCOL))
-            path_id_my_data.append(os.path.join(data_path.split('/')[-1], str(i + 1).zfill(6)))
+            path_id_my_data.append(os.path.join(task['stack_name'], str(particle_start + i + 1).zfill(6)))
 
         del np_image_raw, np_image_processed, np_image_raw_processed, np_image_FT
         gc.collect()

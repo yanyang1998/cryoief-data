@@ -93,6 +93,7 @@ The main entry point for the preprocessing pipeline. Reads cryoSPARC `.cs` metad
 | `is_to_int8` | `bool` | `True` | Normalize each particle to [0, 255] and cast to `uint8` for compact storage |
 | `num_processes` | `int` | `8` | Number of worker processes for LMDB conversion |
 | `chunksize` | `int` | `0` | Multiprocessing chunk size for LMDB conversion; `0` uses a chunk size of `1` |
+| `particle_chunk_size` | `int` or `None` | `None` | Maximum particles loaded from each MRC stack per worker task; `None` chooses an adaptive memory-bounded chunk size |
 
 ---
 

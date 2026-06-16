@@ -405,7 +405,7 @@ def combine_cs_files_column(cs_path1, cs_path2):
 
 def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True,
                         save_raw_data=False, save_FT_data=False, use_lmdb=True,
-                        num_processes=8, chunksize=0):
+                        num_processes=8, chunksize=0, particle_chunk_size=None):
     if not use_lmdb:
         raise NotImplementedError('raw_data_preprocess currently requires use_lmdb=True')
 
@@ -502,7 +502,7 @@ def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int
         create_lmdb_dataset(image_path_list, tmp_data_save_path, num_processes=num_processes,
                             chunksize=chunksize or 1, map_size=map_size, window=False,
                             generate_ft_data=False, resize=resize, is_to_int8=is_to_int8,
-                            save_raw_data=False)
+                            save_raw_data=False, particle_chunk_size=particle_chunk_size)
 
     print('Cryoem data preprocess all done')
     return new_cs_data

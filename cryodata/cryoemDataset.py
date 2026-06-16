@@ -1333,6 +1333,26 @@ class CryoEMDataset(Dataset):
             self.mix_pos_transforms = None
             self.random_rotate_transform_mix_pos = None 
             self.transform_mix_pos = None
+        elif isinstance(transforms, (list, tuple)):
+            # Backward-compatible transform layout used by older Cryo-IEF/CryoRanker
+            # helpers: [particle_transform, random_rotate_transform, local_crops_transform].
+            self.transform = transforms[0] if len(transforms) > 0 else None
+            self.random_rotate_transform = transforms[1] if len(transforms) > 1 else None
+            self.local_crops_transform = transforms[2] if len(transforms) > 2 else None
+            self.mic_transform = None
+            self.mic_crop = None
+            if transforms_list_mix_pos is not None:
+                self.random_rotate_transform_mix_pos = (
+                    transforms_list_mix_pos[1] if len(transforms_list_mix_pos) > 1 else None
+                )
+                self.transform_mix_pos = (
+                    transforms_list_mix_pos[0] if len(transforms_list_mix_pos) > 0 else None
+                )
+                self.mix_pos_transforms = transforms_list_mix_pos
+            else:
+                self.mix_pos_transforms = None
+                self.random_rotate_transform_mix_pos = None
+                self.transform_mix_pos = None
         else:
             self.transform = transforms['ptcls'] if 'ptcls' in transforms else None
             self.local_crops_transform = transforms['local_crops'] if 'local_crops' in transforms else None
