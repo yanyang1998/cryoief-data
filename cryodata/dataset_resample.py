@@ -2,7 +2,7 @@ from torch.utils.data.sampler import Sampler
 import random
 import numpy as np
 
-# Batch size divisors for micrograph datasets (mics_*).
+# Batch size divisors for micrograph-like datasets.
 # A smaller number for __init__ gives a larger starting batch size,
 # while the tighter value in __iter__ keeps per-step memory usage lower.
 MICS_BATCH_DIVISOR_INIT = 10
@@ -23,6 +23,7 @@ DATA_SOURCE_TYPES = (
     DATA_SOURCE_ET_TILTS,
     DATA_SOURCE_ET_PTCLS,
 )
+MICROGRAPH_LIKE_DATA_SOURCES = frozenset((DATA_SOURCE_MICS, DATA_SOURCE_ET_TILTS))
 
 
 def _validate_ratio(name, value):
@@ -188,6 +189,31 @@ def _build_data_source_by_index(id_index_dict, id_data_source_dict=None):
         for index, data_source in zip(index_list, data_sources):
             data_source_by_index[index] = str(data_source)
     return data_source_by_index
+
+
+def _data_source_for_index(index, data_source_by_index):
+    if not data_source_by_index:
+        return DATA_SOURCE_PTCLS
+    return data_source_by_index.get(index, DATA_SOURCE_PTCLS)
+
+
+def _group_indices_by_data_source(indices, data_source_by_index):
+    grouped = {}
+    group_order = []
+    for index in indices:
+        data_source = _data_source_for_index(index, data_source_by_index)
+        if data_source not in grouped:
+            grouped[data_source] = []
+            group_order.append(data_source)
+        grouped[data_source].append(index)
+    return [grouped[data_source] for data_source in group_order if grouped[data_source]]
+
+
+def _split_index_groups_by_data_source(index_groups, data_source_by_index):
+    split_groups = []
+    for group in index_groups:
+        split_groups.extend(_group_indices_by_data_source(group, data_source_by_index))
+    return split_groups
 
 
 def _collect_data_source_by_index_from_buckets(*bucket_dicts):
@@ -634,26 +660,28 @@ class MyResampleSampler_pretrain(Sampler):
 
     # @profile(precision=4)
     def _build_batched_index_list(self, indices, mics_divisor):
-        """Combine per-class index lists into shuffled batches of size batch_size_all / num_processes."""
+        """Combine source-homogeneous index groups into shuffled per-process batches."""
         combined = []
-        for i in range(len(indices)):
+        data_source_by_index = _build_data_source_by_index(self.id_index_dict, self.id_data_source_dict)
+        source_split_indices = _split_index_groups_by_data_source(indices, data_source_by_index)
+        for index_group in source_split_indices:
             batch_size_i = int(self.batch_size_all / (self.num_processes * self.shuffle_type))
-            batch_i = []
-            if (self.id_protein_name_dict is not None
-                    and i in self.id_protein_name_dict
-                    and self.id_protein_name_dict[i].startswith('mics_')):
+            data_source = _data_source_for_index(index_group[0], data_source_by_index)
+            if data_source in MICROGRAPH_LIKE_DATA_SOURCES:
                 batch_size_i = int(batch_size_i / mics_divisor)
-            if len(indices[i]) < batch_size_i * self.num_processes and len(indices[i]) > self.num_processes:
-                batch_size_ii = int(len(indices[i]) / self.num_processes)
-                for j in range(0, len(indices[i]), batch_size_ii):
-                    batch = indices[i][j:j + batch_size_ii]
+            batch_size_i = max(batch_size_i, 1)
+            batch_i = []
+            if len(index_group) < batch_size_i * self.num_processes and len(index_group) > self.num_processes:
+                batch_size_ii = max(int(len(index_group) / self.num_processes), 1)
+                for j in range(0, len(index_group), batch_size_ii):
+                    batch = index_group[j:j + batch_size_ii]
                     batch_i.append(batch)
                     if len(batch_i) == self.num_processes and isinstance(batch_i[0], list):
-                        combined.append(indices[i])
+                        combined.append(batch_i)
                         batch_i = []
             else:
-                for j in range(0, len(indices[i]), batch_size_i):
-                    batch = indices[i][j:j + batch_size_i]
+                for j in range(0, len(index_group), batch_size_i):
+                    batch = index_group[j:j + batch_size_i]
                     if len(batch) == batch_size_i:
                         batch_i.append(batch)
                     if len(batch_i) == self.num_processes and isinstance(batch_i[0], list):
@@ -997,15 +1025,18 @@ def resample_from_id_index_dict(id_index_dict, max_number_per_sample=None, batch
         if _has_active_data_source_ratios(data_source_ratios):
             flat_indices = [item for sublist in resampled_index_list for item in sublist]
             data_source_by_index = _build_data_source_by_index(ids_list_all and id_index_dict or {}, id_data_source_dict)
-            available_indices = [item for dataset_id in ids_list_all for item in id_index_dict.get(dataset_id, [])]
-            return [
-                _apply_data_source_ratios(
-                    flat_indices,
-                    available_indices,
-                    data_source_by_index,
-                    data_source_ratios,
-                )
+            available_indices = [
+                item
+                for dataset_id in ids_list_all
+                for item in _index_ids_from_bucket(id_index_dict.get(dataset_id, []))
             ]
+            selected_indices = _apply_data_source_ratios(
+                flat_indices,
+                available_indices,
+                data_source_by_index,
+                data_source_ratios,
+            )
+            return _group_indices_by_data_source(selected_indices, data_source_by_index)
         return resampled_index_list
         # if per_batch_num > 0:
         #     return final_resampled_index_list
