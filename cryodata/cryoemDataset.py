@@ -12,6 +12,12 @@ import json
 import lmdb
 from annoy import AnnoyIndex
 import logging
+from cryodata.dataset_resample import IndexRange
+from cryodata.metadata_cache import (
+    approximate_cache_nbytes,
+    ensure_metadata_cache,
+    load_metadata_cache,
+)
 
 # Add a module-level logger
 logger = logging.getLogger(__name__)
@@ -84,6 +90,18 @@ def _normalize_data_source_labels(data_source_values, expected_length, data_path
             f"Supported values: {list(SUPPORTED_DATA_SOURCE_TYPES)}."
         )
     return labels
+
+
+class LazySourceMrcsGroupIndex:
+    def __init__(self, group_ids):
+        self.group_ids = group_ids
+        self._cache = {}
+
+    def get(self, group_id, default=None):
+        group_id = int(group_id)
+        if group_id not in self._cache:
+            self._cache[group_id] = np.where(self.group_ids == group_id)[0].tolist()
+        return self._cache.get(group_id, default)
 
 
 def _normalize_source_mrcs_group_ids(group_id_values, expected_length, data_path):
@@ -194,7 +212,8 @@ class MyEmFile(object):
 class CryoMetaData(MyEmFile):
     def __init__(self, cfg=None, mrc_path=None, emfile_path=None, processed_data_path=None, selected_emfile_path=None,
                  tmp_data_save_path=None,
-                 is_extra_valset=False, accelerator=None):
+                 is_extra_valset=False, accelerator=None,
+                 metadata_cache_dir=None, metadata_cache_mode='auto'):
         super(CryoMetaData, self).__init__(emfile_path, selected_emfile_path)
 
         self.processed_data_path = processed_data_path
@@ -202,6 +221,16 @@ class CryoMetaData(MyEmFile):
         self.id_score_source_dict = None
         self.id_used_default_score_dict = None
         self.id_data_source_dict = None
+        self.metadata_cache_dir = metadata_cache_dir
+        self.metadata_cache_mode = metadata_cache_mode or 'auto'
+        self.metadata_backend = 'pickle'
+        self.metadata_cache_nbytes = 0
+        self._metadata_cache_payload = None
+        self.lmdb_reference_cache = None
+        self.protein_index_ids = None
+        self.protein_index_starts = None
+        self.protein_index_counts = None
+        self.protein_index_contiguous = None
 
         assert processed_data_path is not None, "processed_data_path must be provided"
         self.load_preprocessed_data_path(data_path=processed_data_path)
@@ -241,6 +270,34 @@ class CryoMetaData(MyEmFile):
         # if self.selected_particles_id is not None:
         # pass
 
+    def _cached_index_bucket_for_id(self, protein_id):
+        if self.protein_index_ids is None:
+            return None
+        positions = np.where(self.protein_index_ids == protein_id)[0]
+        if len(positions) == 0:
+            return None
+        pos = int(positions[0])
+        start = int(self.protein_index_starts[pos])
+        count = int(self.protein_index_counts[pos])
+        is_contiguous = bool(self.protein_index_contiguous[pos])
+        if is_contiguous:
+            return IndexRange(start, count)
+        protein_id_list_np = np.asarray(self.protein_id_list)
+        return np.where(protein_id_list_np == protein_id)[0]
+
+    def _values_for_indices(self, values, indices):
+        if values is None:
+            return None
+        if isinstance(indices, IndexRange):
+            start = indices.start
+            end = indices.start + len(indices)
+            if hasattr(values, 'codes'):
+                return values.__class__(values.codes[start:end], values.labels)
+            return values[start:end]
+        if hasattr(values, 'take_labels'):
+            return values.take_labels(indices)
+        return np.asarray(values)[indices]
+
     def load_preprocessed_data_path(self, data_path):
         def _validate_loaded_label_length(name, values, allow_empty_default=False):
             if values is None:
@@ -253,27 +310,77 @@ class CryoMetaData(MyEmFile):
                     f"{name} length mismatch: expected {self.length}, found {values_len} in {data_path}."
                 )
 
+        cache_payload = None
+        if self.metadata_cache_mode != 'off':
+            try:
+                cache_dir = ensure_metadata_cache(
+                    data_path,
+                    metadata_cache_dir=self.metadata_cache_dir,
+                    mode=self.metadata_cache_mode,
+                )
+                if cache_dir is not None:
+                    cache_payload = load_metadata_cache(data_path, cache_dir)
+                    self._metadata_cache_payload = cache_payload
+                    self.metadata_backend = 'mmap_cache'
+                    self.metadata_cache_dir = cache_dir
+                    self.metadata_cache_nbytes = approximate_cache_nbytes(cache_payload)
+            except Exception:
+                if self.metadata_cache_mode == 'require':
+                    raise
+                logger.exception('Metadata cache setup failed; falling back to pickle metadata loading.')
+                cache_payload = None
+
         self.lmdb_reference_manifest = None
         manifest_path = os.path.join(data_path, LMDB_REFERENCE_MANIFEST_FILENAME)
-        if os.path.exists(manifest_path):
+        if cache_payload is not None:
+            self.lmdb_reference_cache = cache_payload['manifest'].get('lmdb_reference_cache')
+        elif os.path.exists(manifest_path):
             self.lmdb_reference_manifest = self._safe_load_json(manifest_path)
             if self.lmdb_reference_manifest is None:
                 raise ValueError(f"Failed to load {LMDB_REFERENCE_MANIFEST_FILENAME} from {data_path}.")
 
-        if self.lmdb_reference_manifest is None and not os.path.exists(data_path + '/lmdb_data'):
+        if os.path.exists(data_path + '/output_tif_path.data'):
+            with open(data_path + '/output_tif_path.data', 'rb') as filehandle:
+                self.all_tif_path = pickle.load(filehandle)
+        else:
+            self.all_tif_path = None
+
+        if os.path.exists(data_path + '/output_processed_tif_path.data'):
+            with open(data_path + '/output_processed_tif_path.data', 'rb') as filehandle:
+                self.all_processed_tif_path = pickle.load(filehandle)
+        else:
+            self.all_processed_tif_path = None
+
+        has_lmdb_data = os.path.exists(data_path + '/lmdb_data')
+        has_file_list_data = self.all_processed_tif_path is not None
+        if (self.lmdb_reference_manifest is None and self.lmdb_reference_cache is None
+                and not has_lmdb_data and not has_file_list_data):
             raise ValueError(
-                f"{data_path} does not contain LMDB data."
+                f"{data_path} does not contain LMDB data or output_processed_tif_path.data."
             )
 
-        with open(data_path + '/protein_id_list.data', 'rb') as filehandle:
-            protein_id_list = pickle.load(filehandle)
-        self.length = len(protein_id_list)
-        if os.path.exists(data_path + '/lmdb_data'):
+        if cache_payload is not None:
+            arrays = cache_payload['arrays']
+            protein_id_list = arrays['protein_id_list']
+            self.length = int(cache_payload['manifest']['length'])
+            self.protein_index_ids = arrays.get('protein_index_ids')
+            self.protein_index_starts = arrays.get('protein_index_starts')
+            self.protein_index_counts = arrays.get('protein_index_counts')
+            self.protein_index_contiguous = arrays.get('protein_index_contiguous')
+        else:
+            with open(data_path + '/protein_id_list.data', 'rb') as filehandle:
+                protein_id_list = pickle.load(filehandle)
+            self.length = len(protein_id_list)
+        if has_file_list_data:
+            _validate_loaded_label_length('output_processed_tif_path.data', self.all_processed_tif_path)
+        if has_lmdb_data:
             self.lmdb_path = data_path + '/lmdb_data/'
         else:
             self.lmdb_path = None
 
-        if os.path.exists(data_path + '/labels_for_clustering.data'):
+        if cache_payload is not None and 'labels_for_clustering' in cache_payload['arrays']:
+            self.labels_for_clustering = cache_payload['arrays']['labels_for_clustering']
+        elif os.path.exists(data_path + '/labels_for_clustering.data'):
             with open(data_path + '/labels_for_clustering.data', 'rb') as filehandle:
                 self.labels_for_clustering = pickle.load(filehandle)
             _validate_loaded_label_length(
@@ -284,7 +391,9 @@ class CryoMetaData(MyEmFile):
         else:
             self.labels_for_clustering = None
 
-        if os.path.exists(data_path + '/labels_classification.data'):
+        if cache_payload is not None:
+            self.labels_classification = cache_payload['arrays']['labels_classification']
+        elif os.path.exists(data_path + '/labels_classification.data'):
             with open(data_path + '/labels_classification.data', 'rb') as filehandle:
                 self.labels_classification = pickle.load(filehandle)
             if len(self.labels_classification) == 0:
@@ -294,40 +403,46 @@ class CryoMetaData(MyEmFile):
         else:
             self.labels_classification = [1] * self.length
 
-        labels_score_source_raw = None
-        if os.path.exists(data_path + '/labels_score_source.data'):
-            with open(data_path + '/labels_score_source.data', 'rb') as filehandle:
-                labels_score_source_raw = pickle.load(filehandle)
+        if cache_payload is not None:
+            self.labels_score_source = cache_payload['arrays']['labels_score_source']
+            self.labels_used_default_score = cache_payload['arrays']['labels_used_default_score']
+            self.labels_data_source = cache_payload['labels_data_source']
+            self.source_mrcs_group_id = cache_payload['arrays'].get('source_mrcs_group_id')
+        else:
+            labels_score_source_raw = None
+            if os.path.exists(data_path + '/labels_score_source.data'):
+                with open(data_path + '/labels_score_source.data', 'rb') as filehandle:
+                    labels_score_source_raw = pickle.load(filehandle)
 
-        legacy_default_score_labels = None
-        if labels_score_source_raw is None and os.path.exists(data_path + '/labels_used_default_score.data'):
-            with open(data_path + '/labels_used_default_score.data', 'rb') as filehandle:
-                legacy_default_score_labels = pickle.load(filehandle)
+            legacy_default_score_labels = None
+            if labels_score_source_raw is None and os.path.exists(data_path + '/labels_used_default_score.data'):
+                with open(data_path + '/labels_used_default_score.data', 'rb') as filehandle:
+                    legacy_default_score_labels = pickle.load(filehandle)
 
-        self.labels_score_source = _normalize_score_source_labels(
-            labels_score_source_raw,
-            legacy_default_score_labels,
-            self.length,
-        )
-        self.labels_used_default_score = _derive_used_default_score_from_source(self.labels_score_source)
-        labels_data_source_raw = None
-        if os.path.exists(os.path.join(data_path, DATA_SOURCE_LABEL_FILENAME)):
-            with open(os.path.join(data_path, DATA_SOURCE_LABEL_FILENAME), 'rb') as filehandle:
-                labels_data_source_raw = pickle.load(filehandle)
-        self.labels_data_source = _normalize_data_source_labels(
-            labels_data_source_raw,
-            self.length,
-            data_path,
-        )
-        source_mrcs_group_id_raw = None
-        if os.path.exists(os.path.join(data_path, SOURCE_MRCS_GROUP_ID_FILENAME)):
-            with open(os.path.join(data_path, SOURCE_MRCS_GROUP_ID_FILENAME), 'rb') as filehandle:
-                source_mrcs_group_id_raw = pickle.load(filehandle)
-        self.source_mrcs_group_id = _normalize_source_mrcs_group_ids(
-            source_mrcs_group_id_raw,
-            self.length,
-            data_path,
-        )
+            self.labels_score_source = _normalize_score_source_labels(
+                labels_score_source_raw,
+                legacy_default_score_labels,
+                self.length,
+            )
+            self.labels_used_default_score = _derive_used_default_score_from_source(self.labels_score_source)
+            labels_data_source_raw = None
+            if os.path.exists(os.path.join(data_path, DATA_SOURCE_LABEL_FILENAME)):
+                with open(os.path.join(data_path, DATA_SOURCE_LABEL_FILENAME), 'rb') as filehandle:
+                    labels_data_source_raw = pickle.load(filehandle)
+            self.labels_data_source = _normalize_data_source_labels(
+                labels_data_source_raw,
+                self.length,
+                data_path,
+            )
+            source_mrcs_group_id_raw = None
+            if os.path.exists(os.path.join(data_path, SOURCE_MRCS_GROUP_ID_FILENAME)):
+                with open(os.path.join(data_path, SOURCE_MRCS_GROUP_ID_FILENAME), 'rb') as filehandle:
+                    source_mrcs_group_id_raw = pickle.load(filehandle)
+            self.source_mrcs_group_id = _normalize_source_mrcs_group_ids(
+                source_mrcs_group_id_raw,
+                self.length,
+                data_path,
+            )
 
         self.source_mrcs_group_key = None
         if os.path.exists(os.path.join(data_path, SOURCE_MRCS_GROUP_KEY_FILENAME)):
@@ -342,7 +457,9 @@ class CryoMetaData(MyEmFile):
                       'rb') as filehandle:
                 self.means_stds = pickle.load(filehandle)
 
-        if os.path.exists(data_path + '/protein_id_list.data'):
+        if cache_payload is not None:
+            self.protein_id_list = protein_id_list
+        elif os.path.exists(data_path + '/protein_id_list.data'):
             with open(data_path + '/protein_id_list.data',
                       'rb') as filehandle:
                 self.protein_id_list = pickle.load(filehandle)
@@ -378,7 +495,9 @@ class CryoMetaData(MyEmFile):
                                         data_error_dict.items()}
 
         self.pose_id_map = None
-        if os.path.exists(data_path + '/pose_id_map.data'):
+        if cache_payload is not None and cache_payload.get('pose_id_map') is not None:
+            self.pose_id_map = cache_payload['pose_id_map']
+        elif os.path.exists(data_path + '/pose_id_map.data'):
             # self.pose_id_map = json.load(open(data_path + '/pose_id_map.data', 'r'))
             with open(data_path + '/pose_id_map.data',
                       'rb') as filehandle:
@@ -387,7 +506,9 @@ class CryoMetaData(MyEmFile):
                 self.pose_id_map = pose_id_map
 
         self.pose_id_map2 = None
-        if os.path.exists(data_path + '/pose_id_map2.data'):
+        if cache_payload is not None:
+            self.pose_id_map2 = None
+        elif os.path.exists(data_path + '/pose_id_map2.data'):
             # self.pose_id_map = json.load(open(data_path + '/pose_id_map.data', 'r'))
             with open(data_path + '/pose_id_map2.data',
                       'rb') as filehandle:
@@ -586,23 +707,32 @@ class CryoMetaData(MyEmFile):
         id_score_source_dict = {}
         id_used_default_score_dict = {}
         id_data_source_dict = {}
-        scores_np = np.array(self.labels_classification)
-        score_source_np = np.array(self.labels_score_source)
-        used_default_score_np = np.array(self.labels_used_default_score)
-        data_source_np = np.array(self.labels_data_source)
-        protein_id_list_np = np.array(target_protein_id_list)
+        scores_np = self.labels_classification
+        score_source_np = self.labels_score_source
+        used_default_score_np = self.labels_used_default_score
+        protein_id_list_np = np.asarray(target_protein_id_list)
         for id in target_protein_id_dict.values():
             # aaa = np.where(protein_id_list_np == id)
             # id_index_dict[id] = np.where(protein_id_list_np == id)[0].tolist()
-            id_selected = np.where(protein_id_list_np == id)[0].tolist()
+            id_selected = (
+                self._cached_index_bucket_for_id(id)
+                if target_protein_id_list is self.protein_id_list and self.pose_id_map2 is None
+                else None
+            )
+            if id_selected is None:
+                id_selected_np = np.where(protein_id_list_np == id)[0]
+                id_selected = id_selected_np if self.metadata_backend == 'mmap_cache' else id_selected_np.tolist()
             if self.pose_id_map2 is not None and is_filtering:
                 id_index_dict[id] = [item for item in id_selected if item in self.pose_id_map2.keys()]
             else:
                 id_index_dict[id] = id_selected
-            id_scores_dict[id] = scores_np[id_index_dict[id]]
-            id_score_source_dict[id] = score_source_np[id_index_dict[id]]
-            id_used_default_score_dict[id] = used_default_score_np[id_index_dict[id]]
-            id_data_source_dict[id] = data_source_np[id_index_dict[id]]
+            id_scores_dict[id] = self._values_for_indices(scores_np, id_index_dict[id])
+            id_score_source_dict[id] = self._values_for_indices(score_source_np, id_index_dict[id])
+            id_used_default_score_dict[id] = self._values_for_indices(used_default_score_np, id_index_dict[id])
+            if self.metadata_backend != 'mmap_cache':
+                id_data_source_dict[id] = self._values_for_indices(self.labels_data_source, id_index_dict[id])
+        if self.metadata_backend == 'mmap_cache':
+            id_data_source_dict['__all__'] = self.labels_data_source
         self.id_index_dict = id_index_dict
         self.id_score_source_dict = id_score_source_dict
         self.id_used_default_score_dict = id_used_default_score_dict
@@ -636,15 +766,35 @@ class CryoEMDataset(Dataset):
         self.protein_id_list = metadata.protein_id_list
         self.protein_id_dict = metadata.protein_id_dict
         self.protein_id_dict_reverse = {v: k for k, v in self.protein_id_dict.items()}
+        self.tif_path_list = getattr(metadata, 'all_processed_tif_path', None)
+        self.tif_path_list_raw = getattr(metadata, 'all_tif_path', None)
+        self.metadata_backend = getattr(metadata, 'metadata_backend', 'pickle')
         self.lmdb_reference_manifest = getattr(metadata, 'lmdb_reference_manifest', None)
+        self.lmdb_reference_cache = getattr(metadata, 'lmdb_reference_cache', None)
         self.lmdb_reference_segments = {}
+        self.lmdb_reference_source_indices_dir = None
+        self.lmdb_reference_source_indices = {}
+        self.protein_index_ids = getattr(metadata, 'protein_index_ids', None)
+        self.protein_index_starts = getattr(metadata, 'protein_index_starts', None)
+        self.protein_index_counts = getattr(metadata, 'protein_index_counts', None)
+        self.protein_index_contiguous = getattr(metadata, 'protein_index_contiguous', None)
         self.protein_min_index = {}
+        self.protein_particle_counts = {}
         self.id_index_dict = metadata.id_index_dict or self._build_default_id_index_dict()
 
         if self.protein_id_list is not None:
             self.protein_min_index = self._build_protein_min_index()
+            self.protein_particle_counts = self._build_protein_particle_counts()
 
-        if self.lmdb_reference_manifest is not None:
+        if self.lmdb_reference_cache is not None:
+            self.metadata = []
+            self.cumulative_sizes = []
+            self.worker_id = None
+            self.env_processed = {}
+            self.env_raw = {}
+            self.env_FT = {}
+            self._build_reference_lmdb_metadata_from_cache(metadata)
+        elif self.lmdb_reference_manifest is not None:
             self.metadata = []
             self.cumulative_sizes = []
             self.worker_id = None
@@ -770,6 +920,19 @@ class CryoEMDataset(Dataset):
         return self.tif_len
 
     def _build_default_id_index_dict(self):
+        if self.metadata_backend == 'mmap_cache' and self.protein_index_ids is not None:
+            id_index_dict = {}
+            for protein_id, start, count, contiguous in zip(
+                    self.protein_index_ids,
+                    self.protein_index_starts,
+                    self.protein_index_counts,
+                    self.protein_index_contiguous):
+                protein_id = int(protein_id)
+                if bool(contiguous):
+                    id_index_dict[protein_id] = IndexRange(int(start), int(count))
+                else:
+                    id_index_dict[protein_id] = np.where(np.asarray(self.protein_id_list) == protein_id)[0]
+            return id_index_dict
         id_index_dict = {protein_id: [] for protein_id in self.protein_id_dict.values()}
         for index, protein_id in enumerate(self.protein_id_list):
             id_index_dict.setdefault(protein_id, []).append(index)
@@ -778,6 +941,8 @@ class CryoEMDataset(Dataset):
     def _build_source_mrcs_group_index(self):
         if self.source_mrcs_group_id is None:
             return None
+        if getattr(self, 'metadata_backend', None) == 'mmap_cache':
+            return LazySourceMrcsGroupIndex(self.source_mrcs_group_id)
         source_mrcs_group_index = {}
         for index, group_id in enumerate(self.source_mrcs_group_id):
             source_mrcs_group_index.setdefault(group_id, []).append(index)
@@ -798,10 +963,26 @@ class CryoEMDataset(Dataset):
         return value
 
     def _build_protein_min_index(self):
+        if hasattr(self, 'protein_index_ids') and self.protein_index_ids is not None:
+            return {
+                int(protein_id): int(start)
+                for protein_id, start in zip(self.protein_index_ids, self.protein_index_starts)
+            }
         protein_min_index = {}
         for index, protein_id in enumerate(self.protein_id_list):
             protein_min_index.setdefault(protein_id, index)
         return protein_min_index
+
+    def _build_protein_particle_counts(self):
+        if hasattr(self, 'protein_index_ids') and self.protein_index_ids is not None:
+            return {
+                int(protein_id): int(count)
+                for protein_id, count in zip(self.protein_index_ids, self.protein_index_counts)
+            }
+        protein_particle_counts = {protein_id: 0 for protein_id in self.protein_id_dict.values()}
+        for protein_id in self.protein_id_list:
+            protein_particle_counts[protein_id] = protein_particle_counts.get(protein_id, 0) + 1
+        return protein_particle_counts
 
     def _get_lmdb_entry_count(self, lmdb_dir):
         env = lmdb.open(lmdb_dir, readonly=True, lock=False, readahead=False, meminit=False)
@@ -810,6 +991,17 @@ class CryoEMDataset(Dataset):
                 return txn.stat()['entries']
         finally:
             env.close()
+
+    def _build_reference_lmdb_metadata_from_cache(self, metadata):
+        cache = self.lmdb_reference_cache
+        self.lmdb_reference_source_indices_dir = os.path.join(
+            metadata.metadata_cache_dir,
+            cache.get('source_indices_dir', 'source_local_indices'),
+        )
+        self.lmdb_reference_segments = {
+            int(protein_id): list(segments)
+            for protein_id, segments in cache.get('segments_by_protein', {}).items()
+        }
 
     def _build_reference_lmdb_metadata(self):
         manifest = self.lmdb_reference_manifest
@@ -904,7 +1096,7 @@ class CryoEMDataset(Dataset):
                 )
                 expected_local_start += count
 
-            expected_count = len(self.id_index_dict.get(protein_id, []))
+            expected_count = self.protein_particle_counts.get(protein_id, 0)
             if expected_local_start != expected_count:
                 raise ValueError(
                     f"{LMDB_REFERENCE_MANIFEST_FILENAME} particle count mismatch for '{protein_name}': "
@@ -922,9 +1114,13 @@ class CryoEMDataset(Dataset):
             )
 
     def _get_protein_local_index(self, protein_id, item):
-        item_list = self.id_index_dict.get(protein_id, [])
-        local_index = bisect_left(item_list, item)
-        if local_index >= len(item_list) or item_list[local_index] != item:
+        if self.protein_id_list[item] != protein_id:
+            raise IndexError(item)
+        min_index = self.protein_min_index.get(protein_id)
+        if min_index is None:
+            raise IndexError(item)
+        local_index = item - min_index
+        if local_index < 0 or local_index >= self.protein_particle_counts.get(protein_id, 0):
             raise IndexError(item)
         return local_index
 
@@ -938,6 +1134,19 @@ class CryoEMDataset(Dataset):
             if start <= local_index < end:
                 return segment
         raise IndexError(local_index)
+
+    def _get_segment_source_local_index(self, segment, segment_local_index):
+        if segment.get('source_local_indices') is not None:
+            return segment['source_local_indices'][segment_local_index]
+        source_indices_file = segment.get('source_local_indices_file')
+        if source_indices_file is None:
+            return segment_local_index
+        if source_indices_file not in self.lmdb_reference_source_indices:
+            self.lmdb_reference_source_indices[source_indices_file] = np.load(
+                os.path.join(self.lmdb_reference_source_indices_dir, source_indices_file),
+                mmap_mode='r',
+            )
+        return int(self.lmdb_reference_source_indices[source_indices_file][segment_local_index])
 
     # def open_lmdb(self):
     #     # if mrcdata.lmdb_path is not None:
@@ -1145,7 +1354,7 @@ class CryoEMDataset(Dataset):
         protein_id = self.protein_id_list[item]
         item_list = self.id_index_dict.get(protein_id, [])
         min_id = self.protein_min_index.get(protein_id, min(item_list) if item_list else 0)
-        protein_pose_map = self.pose_id_map.get(protein_id) if isinstance(self.pose_id_map, dict) else None
+        protein_pose_map = self.pose_id_map.get(protein_id) if hasattr(self.pose_id_map, 'get') else None
         if protein_pose_map is None:
             return None, 1
 
@@ -1203,7 +1412,7 @@ class CryoEMDataset(Dataset):
         protein_name = self.protein_id_dict_reverse[protein_id]
         pose_items_id = []
         item1_pose_id = None
-        protein_pose_map = self.pose_id_map.get(protein_id) if isinstance(self.pose_id_map, dict) else None
+        protein_pose_map = self.pose_id_map.get(protein_id) if hasattr(self.pose_id_map, 'get') else None
         if protein_pose_map is None:
             return nearest, min_id, protein_name, pose_items_id, item1_pose_id
 
@@ -1226,17 +1435,18 @@ class CryoEMDataset(Dataset):
     def get_mrcdata(self, item=None, tif_path=None):
         mrcdata = None
         if tif_path is not None:
-            raise ValueError('Direct particle paths are no longer supported; load particles from LMDB.')
-        if item is not None:
-            if self.lmdb_reference_manifest is not None:
+            try:
+                with open(tif_path, 'rb') as filehandle:
+                    mrcdata = pickle.load(filehandle)
+            except EOFError:
+                print('error for path: ' + tif_path)
+        elif item is not None:
+            if self.lmdb_reference_manifest is not None or self.lmdb_reference_cache is not None:
                 protein_id = self.protein_id_list[item]
                 local_index = self._get_protein_local_index(protein_id, item)
                 segment = self._get_manifest_segment(protein_id, local_index)
                 segment_local_index = local_index - segment['merged_local_start']
-                if segment.get('source_local_indices') is None:
-                    source_local_index = segment_local_index
-                else:
-                    source_local_index = segment['source_local_indices'][segment_local_index]
+                source_local_index = self._get_segment_source_local_index(segment, segment_local_index)
 
                 raw_env, processed_env, _ = self._get_env(
                     segment['processed_dir'],
@@ -1291,7 +1501,14 @@ class CryoEMDataset(Dataset):
                     # raw_tif_path = ''
                 del data, value
             else:
-                raise RuntimeError('CryoEMDataset requires LMDB-backed metadata.')
+                if self.tif_path_list is None:
+                    raise RuntimeError('CryoEMDataset requires LMDB-backed metadata or output_processed_tif_path.data.')
+                tif_path = self.tif_path_list[item]
+                try:
+                    with open(tif_path, 'rb') as filehandle:
+                        mrcdata = pickle.load(filehandle)
+                except EOFError:
+                    print('error for path: ' + tif_path)
         return mrcdata
 
     def mrcdata_aug(self, mrcdata, is_random_rotate_transform=True, is_mix_pos=False,is_mics=False):

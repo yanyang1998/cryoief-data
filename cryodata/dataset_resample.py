@@ -1,6 +1,7 @@
 from torch.utils.data.sampler import Sampler
 import random
 import numpy as np
+from collections.abc import Sequence
 
 # Batch size divisors for micrograph-like datasets.
 # A smaller number for __init__ gives a larger starting batch size,
@@ -24,6 +25,38 @@ DATA_SOURCE_TYPES = (
     DATA_SOURCE_ET_PTCLS,
 )
 MICROGRAPH_LIKE_DATA_SOURCES = frozenset((DATA_SOURCE_MICS, DATA_SOURCE_ET_TILTS))
+GLOBAL_DATA_SOURCE_KEY = '__all__'
+
+
+class IndexRange(Sequence):
+    """Compact sequence for contiguous dataset indices."""
+
+    def __init__(self, start, count):
+        self.start = int(start)
+        self.count = int(count)
+
+    def __len__(self):
+        return self.count
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return list(range(self.start, self.start + self.count))[item]
+        item = int(item)
+        if item < 0:
+            item += self.count
+        if item < 0 or item >= self.count:
+            raise IndexError(item)
+        return self.start + item
+
+    def __iter__(self):
+        return iter(range(self.start, self.start + self.count))
+
+    def to_numpy(self):
+        return np.arange(self.start, self.start + self.count, dtype=np.int64)
+
+
+def _is_index_range(items):
+    return isinstance(items, IndexRange)
 
 
 def _validate_ratio(name, value):
@@ -116,6 +149,10 @@ def _normalize_data_source_ratio_mapping(data_source_ratios=None):
 def _coerce_optional_sequence(values, expected_length):
     if values is None:
         return None
+    if hasattr(values, 'take_labels'):
+        if len(values) != expected_length:
+            return None
+        return values
     values_list = list(values)
     if len(values_list) != expected_length:
         return None
@@ -126,6 +163,11 @@ def _align_values_to_indices(selected_ids, source_ids, source_values):
     aligned_values = _coerce_optional_sequence(source_values, len(source_ids))
     if aligned_values is None:
         return None
+    if _is_index_range(source_ids):
+        positions = [int(item_id) - source_ids.start for item_id in selected_ids]
+        if hasattr(aligned_values, 'take_labels'):
+            return aligned_values.take_labels(positions).tolist()
+        return np.asarray(aligned_values)[positions].tolist()
     value_by_id = {source_id: aligned_values[idx] for idx, source_id in enumerate(source_ids)}
     try:
         return [value_by_id[item_id] for item_id in selected_ids]
@@ -141,7 +183,6 @@ def _derive_score_source_from_legacy(used_default_score, expected_length):
 
 
 def _sample_without_replacement(items, sample_size, weights=None):
-    items = list(items)
     sample_size = min(sample_size, len(items))
     if sample_size <= 0:
         return []
@@ -163,6 +204,10 @@ def _sample_without_replacement(items, sample_size, weights=None):
                 ).tolist()
                 return [items[position] for position in selected_positions]
 
+    if _is_index_range(items):
+        selected_offsets = random.sample(range(len(items)), sample_size)
+        return [items.start + offset for offset in selected_offsets]
+    items = list(items)
     return random.sample(items, sample_size)
 
 
@@ -180,6 +225,8 @@ def _unique_in_order(items):
 def _build_data_source_by_index(id_index_dict, id_data_source_dict=None):
     if id_data_source_dict is None:
         return {}
+    if GLOBAL_DATA_SOURCE_KEY in id_data_source_dict:
+        return {}
     data_source_by_index = {}
     for dataset_id, bucket in id_index_dict.items():
         index_list = _index_ids_from_bucket(bucket)
@@ -191,17 +238,25 @@ def _build_data_source_by_index(id_index_dict, id_data_source_dict=None):
     return data_source_by_index
 
 
-def _data_source_for_index(index, data_source_by_index):
+def _global_data_source_labels(id_data_source_dict):
+    if not id_data_source_dict:
+        return None
+    return id_data_source_dict.get(GLOBAL_DATA_SOURCE_KEY)
+
+
+def _data_source_for_index(index, data_source_by_index, global_data_sources=None):
+    if global_data_sources is not None:
+        return str(global_data_sources[index])
     if not data_source_by_index:
         return DATA_SOURCE_PTCLS
     return data_source_by_index.get(index, DATA_SOURCE_PTCLS)
 
 
-def _group_indices_by_data_source(indices, data_source_by_index):
+def _group_indices_by_data_source(indices, data_source_by_index, global_data_sources=None):
     grouped = {}
     group_order = []
     for index in indices:
-        data_source = _data_source_for_index(index, data_source_by_index)
+        data_source = _data_source_for_index(index, data_source_by_index, global_data_sources)
         if data_source not in grouped:
             grouped[data_source] = []
             group_order.append(data_source)
@@ -209,10 +264,10 @@ def _group_indices_by_data_source(indices, data_source_by_index):
     return [grouped[data_source] for data_source in group_order if grouped[data_source]]
 
 
-def _split_index_groups_by_data_source(index_groups, data_source_by_index):
+def _split_index_groups_by_data_source(index_groups, data_source_by_index, global_data_sources=None):
     split_groups = []
     for group in index_groups:
-        split_groups.extend(_group_indices_by_data_source(group, data_source_by_index))
+        split_groups.extend(_group_indices_by_data_source(group, data_source_by_index, global_data_sources))
     return split_groups
 
 
@@ -429,7 +484,13 @@ def _chunk_sequence_keep_remainder(items, chunk_size):
 def _index_ids_from_bucket(bucket):
     if isinstance(bucket, dict):
         return list(bucket.get('id', []))
-    return list(bucket)
+    return bucket
+
+
+def _index_sequence_to_numpy(index_list):
+    if _is_index_range(index_list):
+        return index_list.to_numpy()
+    return np.asarray(index_list)
 
 
 class MyResampleSampler(Sampler):
@@ -662,11 +723,20 @@ class MyResampleSampler_pretrain(Sampler):
     def _build_batched_index_list(self, indices, mics_divisor):
         """Combine source-homogeneous index groups into shuffled per-process batches."""
         combined = []
-        data_source_by_index = _build_data_source_by_index(self.id_index_dict, self.id_data_source_dict)
-        source_split_indices = _split_index_groups_by_data_source(indices, data_source_by_index)
+        global_data_sources = _global_data_source_labels(self.id_data_source_dict)
+        data_source_by_index = (
+            {}
+            if global_data_sources is not None
+            else _build_data_source_by_index(self.id_index_dict, self.id_data_source_dict)
+        )
+        source_split_indices = _split_index_groups_by_data_source(
+            indices,
+            data_source_by_index,
+            global_data_sources,
+        )
         for index_group in source_split_indices:
             batch_size_i = int(self.batch_size_all / (self.num_processes * self.shuffle_type))
-            data_source = _data_source_for_index(index_group[0], data_source_by_index)
+            data_source = _data_source_for_index(index_group[0], data_source_by_index, global_data_sources)
             if data_source in MICROGRAPH_LIKE_DATA_SOURCES:
                 batch_size_i = int(batch_size_i / mics_divisor)
             batch_size_i = max(batch_size_i, 1)
@@ -1102,7 +1172,7 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
         if dataset_score_source is None:
             dataset_score_source = index_list.get('score_source')
     else:
-        base_index_list = list(index_list)
+        base_index_list = index_list
 
     dataset_scores = _coerce_optional_sequence(dataset_scores, len(base_index_list))
     dataset_used_default_score = _coerce_optional_sequence(dataset_used_default_score, len(base_index_list))
@@ -1121,9 +1191,9 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
     else:
         index_list = base_index_list
 
-    if dataset_scores is not None and len(index_list) > 0 and scores_bar > 0 and max(dataset_scores) != min(dataset_scores):
+    if dataset_scores is not None and len(index_list) > 0 and scores_bar > 0 and np.max(dataset_scores) != np.min(dataset_scores):
         scores_arr = np.asarray(dataset_scores)
-        index_arr = np.asarray(index_list)
+        index_arr = _index_sequence_to_numpy(index_list)
         good_mask = scores_arr >= scores_bar
         bad_mask = (scores_arr < scores_bar) & (scores_arr >= 0)
 
@@ -1160,7 +1230,7 @@ def get_index_per_class(index_list, max_number_per_sample=None, shuffle_type=Non
         if dataset_scores is not None:
             scores_arr = np.asarray(dataset_scores)
             valid_mask = scores_arr >= 0
-            index_list = np.asarray(index_list)[valid_mask].tolist()
+            index_list = _index_sequence_to_numpy(index_list)[valid_mask].tolist()
             if dataset_used_default_score is not None:
                 dataset_used_default_score = np.asarray(dataset_used_default_score)[valid_mask].tolist()
             if dataset_score_source is not None:
