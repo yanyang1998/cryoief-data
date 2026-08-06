@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 import os
 import pickle
 import random
+import math
 import torch
 import json
 import lmdb
@@ -1274,17 +1275,51 @@ class CryoEMDataset(Dataset):
         return out
 
     def get_mask(self,setting,W,H):
-        mask = np.zeros(W*H, dtype=np.int16)
+        mask = np.zeros((W, H), dtype=np.int16)
+        if random.random() >= setting['p']:
+            return mask
 
-        if random.random() < setting['p']:
+        mask_ratio = random.uniform(setting['mask_ratio'][0], setting['mask_ratio'][1])
+        num_mask = min(W * H, max(0, int(W * H * mask_ratio)))
+        mask_type = setting.get('mask_type', 'random')
+        if mask_type == 'random':
+            mask.flat[random.sample(range(W * H), num_mask)] = 1
+            return mask
+        if mask_type != 'block':
+            raise ValueError(f"Unsupported mask_type: {mask_type!r}; expected 'random' or 'block'")
 
-            mask_ratio=random.uniform(setting['mask_ratio'][0],setting['mask_ratio'][1] )
-            num_mask=int(W*H*mask_ratio)
-            mask_indices=random.sample(range(W*H),num_mask)
-            for idx in mask_indices:
-                mask[idx]=1
-        mask=mask.reshape(W,H)
+        min_area = max(1, int(setting.get('block_min_patches', 4)))
+        max_area = max(min_area, int(setting.get('block_max_patches', num_mask)))
+        min_aspect = float(setting.get('block_min_aspect', 0.3))
+        max_aspect = float(setting.get('block_max_aspect', 1.0 / min_aspect))
+        if min_aspect <= 0 or max_aspect < min_aspect:
+            raise ValueError('block mask aspect ratios must satisfy 0 < min <= max')
 
+        # Add random rectangles until the requested mask budget is reached.
+        attempts = 0
+        max_attempts = max(20, num_mask * 10)
+        while int(mask.sum()) < num_mask and attempts < max_attempts:
+            attempts += 1
+            remaining = num_mask - int(mask.sum())
+            target_area = random.randint(min(min_area, remaining), min(max_area, remaining))
+            aspect = math.exp(random.uniform(math.log(min_aspect), math.log(max_aspect)))
+            block_w = min(W, max(1, int(round(math.sqrt(target_area * aspect)))))
+            block_h = min(H, max(1, int(round(math.sqrt(target_area / aspect)))))
+            top = random.randint(0, W - block_w)
+            left = random.randint(0, H - block_h)
+            region = mask[top:top + block_w, left:left + block_h]
+            available = np.argwhere(region == 0)
+            if available.size == 0:
+                continue
+            for row, col in available[:remaining]:
+                region[row, col] = 1
+
+        # Degenerate tiny grids or heavy overlap can exhaust rectangle attempts.
+        # Fill any residual budget so mask_ratio remains exact.
+        remaining = num_mask - int(mask.sum())
+        if remaining > 0:
+            available = np.flatnonzero(mask == 0)
+            mask.flat[random.sample(available.tolist(), remaining)] = 1
         return mask
 
 

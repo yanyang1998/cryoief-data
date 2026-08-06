@@ -34,6 +34,48 @@ pip install -e .
 
 ## Quick Start
 
+### Prepare CryoSPARC particle metadata
+
+After installation, create a sorted cryoSPARC metadata file and a matching
+RELION STAR file directly from a job/export directory:
+
+```bash
+cryodata-prepare-cs /path/to/cryosparc/job
+```
+
+This writes `new_particles.cs` and `new_particles.star` into the input
+directory. Use `--output-dir /path/to/output` to choose another destination,
+`--no-star` to create only the CS file, and `--force` to rebuild and replace
+existing requested outputs. Existing files are protected by default.
+
+The same operation is available as a Python API:
+
+```python
+from cryodata import prepare_particle_metadata
+
+result = prepare_particle_metadata(
+    "/path/to/cryosparc/job",
+    output_dir="/path/to/output",
+)
+print(result.cs_path, result.star_path, result.particle_count)
+```
+
+The command combines particle and passthrough metadata when both are present,
+groups particles by MRC stack, and sorts each stack by `blob/idx`. It does not
+modify particle images or recompute CTF and alignment values.
+
+To convert one existing `.cs` file directly, without merging or sorting it:
+
+```bash
+cryodata-cs2star /path/to/particles.cs
+cryodata-cs2star /path/to/particles.cs -o /path/to/custom.star
+```
+
+The default output is next to the input with its suffix changed to `.star`.
+Existing STAR files are protected unless `--force` is supplied.
+
+### Build a training dataset
+
 ```python
 from cryodata.data_preprocess.mrc_preprocess import raw_data_preprocess
 from cryodata.cryoemDataset import CryoEMDataset, CryoMetaData

@@ -403,6 +403,55 @@ def combine_cs_files_column(cs_path1, cs_path2):
     # cs2star(save_path,save_path.replace('.cs','.star'))
 
 
+def load_original_csdata_from_cryosparc_dir(raw_data_path):
+    """Load particle metadata from original cryoSPARC exports.
+
+    Unlike :func:`raw_csdata_process_from_cryosparc_dir`, this helper never
+    reads or writes ``new_particles.cs``.  It is intended for explicit rebuild
+    workflows such as the ``cryodata-prepare-cs`` command.
+
+    Returns
+    -------
+    tuple
+        ``(dataset, source_paths)`` where ``source_paths`` lists the particle
+        and optional passthrough files used to construct the dataset.
+    """
+    raw_data_path = os.fspath(raw_data_path)
+    if not os.path.isdir(raw_data_path):
+        raise NotADirectoryError(f"CryoSPARC input directory not found: {raw_data_path}")
+
+    passthrough_path = _find_passthrough_cs_path(raw_data_path)
+    particles_path = _find_particle_cs_path(raw_data_path)
+    generated_path = os.path.abspath(os.path.join(raw_data_path, "new_particles.cs"))
+
+    if particles_path is not None and os.path.abspath(particles_path) == generated_path:
+        particles_path = None
+
+    if particles_path is None:
+        candidates = []
+        for filename in sorted(os.listdir(raw_data_path)):
+            candidate = os.path.join(raw_data_path, filename)
+            if not filename.endswith(".cs"):
+                continue
+            if os.path.abspath(candidate) == generated_path or candidate == passthrough_path:
+                continue
+            candidates.append(candidate)
+        if candidates:
+            particles_path = candidates[-1]
+
+    if particles_path is None:
+        raise FileNotFoundError(
+            f"No original CryoSPARC particle .cs file found in {raw_data_path}"
+        )
+
+    if passthrough_path is not None:
+        return combine_cs_files_column(particles_path, passthrough_path), [
+            particles_path,
+            passthrough_path,
+        ]
+    return Dataset.load(particles_path), [particles_path]
+
+
 def raw_data_preprocess(raw_dataset_dir, dataset_save_dir, resize=224, is_to_int8=True,
                         save_raw_data=False, save_FT_data=False, use_lmdb=True,
                         num_processes=8, chunksize=0, particle_chunk_size=None):

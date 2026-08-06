@@ -19,7 +19,7 @@ URL = 'https://github.com/SMART-StructBio-AI/cryoief-data'
 EMAIL = 'y.yan98@outlook.com'
 AUTHOR = 'Yang Yan'
 REQUIRES_PYTHON = '>=3.9.0'
-VERSION = '0.1.4b03'
+VERSION = '0.1.4b04'
 
 # What packages are required for this module to be executed?
 REQUIRED = ['accelerate>=1.0.0',
@@ -126,9 +126,12 @@ setup(
     # If your package is a single module, use this instead of 'packages':
     # py_modules=['mypackage'],
 
-    # entry_points={
-    #     'console_scripts': ['mycli=mymodule:cli'],
-    # },
+    entry_points={
+        'console_scripts': [
+            'cryodata-prepare-cs=cryodata.prepare:main',
+            'cryodata-cs2star=cryodata.cs2star_cli:main',
+        ],
+    },
     install_requires=REQUIRED,
     extras_require=EXTRAS,
     include_package_data=True,
